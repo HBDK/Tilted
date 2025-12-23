@@ -7,7 +7,6 @@
 #include <tinyexpr.h>
 #include <Preferences.h>
 #include <Button2.h>
-#include <TFT_eSPI.h>
 #include <SPI.h>
 #include <CircularBuffer.h>
 #include <WebServer.h>
@@ -17,9 +16,6 @@
 #define BUTTON_2 0
 Button2 btn1(BUTTON_1);
 Button2 btn2(BUTTON_2);
-
-// Init display
-TFT_eSPI tft = TFT_eSPI(135, 240);
 
 // Preferences
 Preferences preferences;
@@ -509,178 +505,13 @@ void button1Pressed(Button2 &btn)
 #define GRAPH_HEIGHT ((tft.height() - STATUS_HEIGHT) / 2)
 #define DATA_SECTION_Y (STATUS_HEIGHT + GRAPH_HEIGHT)
 
-void screenUpdateVariables(float gravity, float temp, float tilt) {
-    tft.setTextDatum(TC_DATUM);
-    tft.setTextPadding(tft.textWidth("11.000", 4));
-    tft.drawFloat(gravity, 3, tft.width() / 2, DATA_SECTION_Y + 40, 4);
-    tft.drawFloat(temp, 2, tft.width() / 2, DATA_SECTION_Y + 80, 4);
-    tft.setTextPadding(0);
-
-    // Update tilt value in status bar
-    tft.setTextDatum(TL_DATUM);
-    tft.setTextPadding(tft.textWidth("Tilt: 000.0", 1));
-    tft.drawString("Tilt: " + (String)tilt, 5, 5, 1);
-    tft.setTextPadding(0);
-}
-
-void Trace(TFT_eSPI &tft, double x, double y,
-           double gx, double gy,
-           double w, double h,
-           double xlo, double xhi,
-           double ylo, double yhi,
-           double &ox, double &oy,
-           bool &update1, unsigned int color)
-{
-
-    //unsigned int gcolor = DKBLUE;   // gcolor = graph grid color
-    unsigned int pcolor = color; // pcolor = color of your plotted data
-
-    // initialize old x and old y in order to draw the first point of the graph
-    // but save the transformed value
-    // note my transform funcition is the same as the map function, except the map uses long and we need doubles
-    if (update1)
-    {
-        update1 = false;
-
-        ox = (x - xlo) * (w) / (xhi - xlo) + gx;
-        oy = (y - ylo) * (gy - h - gy) / (yhi - ylo) + gy;
-
-        if ((ox < gx) || (ox > gx + w))
-        {
-            update1 = true;
-            return;
-        }
-        if ((oy < gy - h) || (oy > gy))
-        {
-            update1 = true;
-            return;
-        }
-
-        tft.setTextDatum(MR_DATUM);
-    }
-
-    // the coordinates are now drawn, plot the data
-    // the entire plotting code are these few lines...
-    // recall that ox and oy are initialized above
-    x = (x - xlo) * (w) / (xhi - xlo) + gx;
-    y = (y - ylo) * (gy - h - gy) / (yhi - ylo) + gy;
-
-    if ((x < gx) || (x > gx + w))
-    {
-        update1 = true;
-        return;
-    }
-    if ((y < gy - h) || (y > gy))
-    {
-        update1 = true;
-        return;
-    }
-
-    tft.drawLine(ox, oy, x, y, pcolor);
-    // it's up to you but drawing 2 more lines to give the graph some thickness
-    tft.drawLine(ox, oy + 1, x, y + 1, pcolor);
-    tft.drawLine(ox, oy - 1, x, y - 1, pcolor);
-    ox = x;
-    oy = y;
-}
-
-void drawGraph() {
-    // No point in drawing the graph if we don't have at least two readings.
-    if (readingsHistory.size() < 2) {
-        return;
-    }
-
-    // Clear graph before update, but preserve status bar
-    tft.fillRect(0, STATUS_HEIGHT, tft.width(), GRAPH_HEIGHT, TFT_BLACK);
-
-    // Draw rectangle around graph
-    tft.drawRect(0, STATUS_HEIGHT, tft.width(), GRAPH_HEIGHT, TFT_WHITE);
-
-    float minValue = readingsHistory[0];
-    float maxValue = 0;
-
-    for (int i = 0; i < readingsHistory.size(); i++) {
-        if (readingsHistory[i] > maxValue) {
-            maxValue = readingsHistory[i];
-        }
-        if (readingsHistory[i] < minValue) {
-            minValue = readingsHistory[i];
-        }
-    }
-    Serial.printf("Min: %f, Max: %f", minValue, maxValue);
-
-    double x, y;
-    bool update1 = true;
-    double ox = -999, oy = -999; // Force them to be off screen
-    for (int i = 0; i < readingsHistory.size(); i++) {
-        x = i + 1;
-        y = readingsHistory[i];
-        // Adjusted to account for status bar
-        Trace(tft, x, y, 0, STATUS_HEIGHT + GRAPH_HEIGHT - 10, tft.width(), GRAPH_HEIGHT - 20, 
-              1, readingsHistory.size(), minValue, maxValue, ox, oy, update1, TFT_YELLOW);
-        Serial.printf("Update %f", x);
-    }
-
-    tft.setTextPadding(tft.textWidth("111.000", 2));
-    tft.setTextDatum(ML_DATUM);
-    tft.drawFloat(readingsHistory.first(), 3, 0, DATA_SECTION_Y + 10, 2);
-    tft.setTextDatum(MR_DATUM);
-    tft.drawFloat(readingsHistory.last(), 3, tft.width(), DATA_SECTION_Y + 10, 2);
-    tft.setTextPadding(0);
-}
-
-void prepareScreen() {
-    tft.init();
-    tft.setRotation(0);
-    tft.fillScreen(TFT_BLACK);
-    
-    // Battery indicator outline
-    tft.drawRect(tft.width() - 30, 5, 25, 12, TFT_WHITE);
-    tft.fillRect(tft.width() - 5, 8, 2, 6, TFT_WHITE);  // Battery tip
-
-    // Initialize tilt display area
-    tft.setTextDatum(TL_DATUM);
-    tft.drawString("Tilt: 0.0", 5, 5, 1);
-    
-    tft.setTextDatum(TL_DATUM);
-    tft.drawString("Gravity", 0, DATA_SECTION_Y + 25, 2);
-    tft.drawString("Temperature", 0, DATA_SECTION_Y + 65, 2);
-
-    // Draw rectangle around graph, adjusted for status bar
-    tft.drawRect(0, STATUS_HEIGHT, tft.width(), GRAPH_HEIGHT, TFT_WHITE);
-}
-
 // Update the battery indicator based on voltage
 void updateBatteryIndicator(int voltage) {
     // Map voltage to a battery percentage (adjust these values for your battery)
     // Assuming 3.0V is empty and 4.2V is full for a LiPo battery
     int percentage = map(constrain(voltage, 2800, 3400), 2800, 3400, 0, 100);
     
-    // Determine color based on percentage
-    uint16_t batteryColor;
-    if (percentage > 70) {
-        batteryColor = TFT_GREEN;
-    } else if (percentage > 30) {
-        batteryColor = TFT_YELLOW;
-    } else {
-        batteryColor = TFT_RED;
-    }
-    
-    // Clear the previous battery level
-    tft.fillRect(tft.width() - 29, 6, 23, 10, TFT_BLACK);
-    
-    // Draw the new battery level
-    int fillWidth = map(percentage, 0, 100, 0, 23);
-    tft.fillRect(tft.width() - 29, 6, fillWidth, 10, batteryColor);
-    
-    // Optionally display percentage
-    if (percentage < 20) {
-        // Display low battery warning
-        tft.setTextDatum(TR_DATUM);
-        tft.setTextColor(TFT_RED);
-        tft.drawString("Low", tft.width() - 35, 6, 1);
-        tft.setTextColor(TFT_WHITE);
-    }
+    Serial.printf("Battery: %d%% (%d mV)\n", percentage, voltage);
 }
 
 void saveReading(float reading)
@@ -705,8 +536,6 @@ void setup()
         //WiFi.softAPdisconnect(true);
         initEspNow();
     }
-
-    prepareScreen();
 }
 
 void loop()
@@ -726,9 +555,7 @@ void loop()
         // Update battery indicator with each new reading
         updateBatteryIndicator(tiltData.volt);
         
-        screenUpdateVariables(tiltGravity, tiltData.temp, tiltData.tilt);
         saveReading(tiltGravity);
-        drawGraph();
         wifiConnect();
         if (integrationEnabled(tiltedURL))
         {
