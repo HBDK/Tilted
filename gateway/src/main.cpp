@@ -25,9 +25,6 @@ String wifiSSID = "";
 String wifiPassword = "";
 String polynomial = "";
 String brewfatherURL = "";
-String tiltedURL = "";
-String tiltedUsername = "";
-String tiltedPassword = "";
 
 // AP mode settings
 const char* apSSID = "TiltedGateway-Setup";
@@ -42,9 +39,6 @@ WebServer server(80);
 #define RETRY_INTERVAL 5000
 
 WiFiClient wifiClient;
-
-// Tilted
-WiFiClientSecure secureClient;
 
 // the following three settings must match the slave settings
 uint8_t mac[] = {0x3A, 0x33, 0x33, 0x33, 0x33, 0x33};
@@ -127,24 +121,6 @@ const char CONFIG_HTML[] PROGMEM = R"rawliteral(
                     <div class="form-group">
                         <label for="brewfatherURL">Brewfather URL:</label>
                         <input type="text" id="brewfatherURL" name="brewfatherURL" value="%BREWFATHER_URL%">
-                    </div>
-                </fieldset>
-            </div>
-            
-            <div class="section">
-                <fieldset>
-                    <legend>Tilted API Settings</legend>
-                    <div class="form-group">
-                        <label for="tiltedURL">Tilted API URL:</label>
-                        <input type="text" id="tiltedURL" name="tiltedURL" value="%TILTED_URL%">
-                    </div>
-                    <div class="form-group">
-                        <label for="tiltedUsername">Tilted Username:</label>
-                        <input type="text" id="tiltedUsername" name="tiltedUsername" value="%TILTED_USERNAME%">
-                    </div>
-                    <div class="form-group">
-                        <label for="tiltedPassword">Tilted Password:</label>
-                        <input type="password" id="tiltedPassword" name="tiltedPassword" value="%TILTED_PASSWORD%">
                     </div>
                 </fieldset>
             </div>
@@ -272,56 +248,6 @@ String macToString(const uint8_t* mac) {
     return String(macStr);
 }
 
-void publishTilted(const String& apiUrl, const String& username, const String& password)
-{
-    if (apiUrl.isEmpty()) {
-        Serial.println("JSON API URL not configured, skipping...");
-        return;
-    }
-
-    Serial.println("Sending to JSON API...");
-    const size_t capacity = JSON_OBJECT_SIZE(3) + JSON_OBJECT_SIZE(5);
-    DynamicJsonDocument doc(capacity);
-
-    // Create the nested reading object
-    JsonObject reading = doc.createNestedObject("reading");
-        
-    reading["sensorId"] = macToString(sensorId);
-    reading["gravity"] = tiltGravity;
-    reading["tilt"] = tiltData.tilt;
-    reading["temp"] = tiltData.temp;
-    reading["volt"] = tiltData.volt;
-    reading["interval"] = tiltData.interval;
-    
-    // Add gateway identification
-    doc["gatewayId"] = WiFi.macAddress();
-    doc["gatewayName"] = deviceName;
-
-    String jsonBody;
-    serializeJson(doc, jsonBody);
-
-    secureClient.setInsecure();
-
-    HTTPClient http;
-    http.begin(secureClient, apiUrl.c_str());
-    http.addHeader("Content-Type", "application/json");
-
-    // Add basic authentication
-    http.setAuthorization(username.c_str(), password.c_str());
-    
-    int httpResponseCode = http.POST(jsonBody);
-    
-    if (httpResponseCode > 0) {
-        Serial.print("JSON API HTTP Response code: ");
-        Serial.println(httpResponseCode);
-    } else {
-        Serial.print("JSON API Error code: ");
-        Serial.println(httpResponseCode);
-    }
-    
-    http.end();
-}
-
 bool integrationEnabled(String integration) {
     return !integration.isEmpty();
 }
@@ -335,9 +261,6 @@ void loadSettings() {
     wifiPassword = preferences.getString("wifiPassword", "");
     polynomial = preferences.getString("polynomial", "");
     brewfatherURL = preferences.getString("brewfatherURL", "");
-    tiltedURL = preferences.getString("tiltedURL", "");
-    tiltedUsername = preferences.getString("tiltedUsername", "");
-    tiltedPassword = preferences.getString("tiltedPassword", "");
     
     preferences.end();
     
@@ -345,7 +268,6 @@ void loadSettings() {
     Serial.println("Device Name: " + deviceName);
     Serial.println("WiFi SSID: " + wifiSSID);
     Serial.println("Polynomial: " + polynomial);
-    Serial.println("Tilted API URL: " + tiltedURL);
 }
 
 // Save settings to Preferences
@@ -357,9 +279,6 @@ void saveSettings() {
     preferences.putString("wifiPassword", wifiPassword);
     preferences.putString("polynomial", polynomial);
     preferences.putString("brewfatherURL", brewfatherURL);
-    preferences.putString("tiltedURL", tiltedURL);
-    preferences.putString("tiltedUsername", tiltedUsername);
-    preferences.putString("tiltedPassword", tiltedPassword);
     
     preferences.end();
     
@@ -374,9 +293,6 @@ String processTemplate() {
     html.replace("%WIFI_PASSWORD%", wifiPassword);
     html.replace("%POLYNOMIAL%", polynomial);
     html.replace("%BREWFATHER_URL%", brewfatherURL);
-    html.replace("%TILTED_URL%", tiltedURL);
-    html.replace("%TILTED_USERNAME%", tiltedUsername);
-    html.replace("%TILTED_PASSWORD%", tiltedPassword);
     return html;
 }
 
@@ -401,9 +317,6 @@ void startConfigMode() {
         wifiPassword = server.arg("wifiPassword");
         polynomial = server.arg("polynomial");
         brewfatherURL = server.arg("brewfatherURL");
-        tiltedURL = server.arg("tiltedURL");
-        tiltedUsername = server.arg("tiltedUsername");
-        tiltedPassword = server.arg("tiltedPassword");
         
         saveSettings();
         
@@ -483,10 +396,6 @@ void loop()
         
         saveReading(tiltGravity);
         wifiConnect();
-        if (integrationEnabled(tiltedURL))
-        {
-            publishTilted(tiltedURL, tiltedUsername, tiltedPassword);
-        }
         if (integrationEnabled(brewfatherURL))
         {
             publishBrewfather();
