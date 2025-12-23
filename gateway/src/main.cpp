@@ -6,7 +6,6 @@
 #include <HTTPClient.h>
 #include <tinyexpr.h>
 #include <Preferences.h>
-#include <InfluxDbClient.h>
 #include <Button2.h>
 #include <TFT_eSPI.h>
 #include <SPI.h>
@@ -33,10 +32,6 @@ String polynomial = "";
 String mqttServer = "";
 String mqttTopic = "tilted/data";
 String brewfatherURL = "";
-String influxdbURL = "";
-String influxdbOrg = "";
-String influxdbBucket = "";
-String influxdbToken = "";
 String tiltedURL = "";
 String tiltedUsername = "";
 String tiltedPassword = "";
@@ -56,10 +51,6 @@ WebServer server(80);
 // MQTT config
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
-
-// InfluxDB
-InfluxDBClient influxClient;
-Point influxDataPoint("tilted_data");
 
 // Tilted
 WiFiClientSecure secureClient;
@@ -163,28 +154,6 @@ const char CONFIG_HTML[] PROGMEM = R"rawliteral(
                 </fieldset>
             </div>
             
-            <div class="section">
-                <fieldset>
-                    <legend>InfluxDB Settings</legend>
-                    <div class="form-group">
-                        <label for="influxdbURL">InfluxDB URL:</label>
-                        <input type="text" id="influxdbURL" name="influxdbURL" value="%INFLUXDB_URL%">
-                    </div>
-                    <div class="form-group">
-                        <label for="influxdbOrg">InfluxDB Org:</label>
-                        <input type="text" id="influxdbOrg" name="influxdbOrg" value="%INFLUXDB_ORG%">
-                    </div>
-                    <div class="form-group">
-                        <label for="influxdbBucket">InfluxDB Bucket:</label>
-                        <input type="text" id="influxdbBucket" name="influxdbBucket" value="%INFLUXDB_BUCKET%">
-                    </div>
-                    <div class="form-group">
-                        <label for="influxdbToken">InfluxDB Token:</label>
-                        <input type="text" id="influxdbToken" name="influxdbToken" value="%INFLUXDB_TOKEN%">
-                    </div>
-                </fieldset>
-            </div>
-
             <div class="section">
                 <fieldset>
                     <legend>Tilted API Settings</legend>
@@ -365,24 +334,6 @@ void publishBrewfather()
     http.end();
 }
 
-void publishInfluxDB()
-{
-    // Set tags
-    influxDataPoint.addTag("name", deviceName.c_str());
-    // Add data fields
-    influxDataPoint.addField("gravity", tiltGravity, 3);
-    influxDataPoint.addField("tilt", tiltData.tilt);
-    influxDataPoint.addField("temp", tiltData.temp);
-    influxDataPoint.addField("voltage", tiltData.volt);
-    influxDataPoint.addField("interval", tiltData.interval);
-
-    if (!influxClient.writePoint(influxDataPoint))
-    {
-        Serial.print("InfluxDB write failed: ");
-        Serial.println(influxClient.getLastErrorMessage());
-    }
-}
-
 String macToString(const uint8_t* mac) {
     char macStr[18];
     snprintf(macStr, sizeof(macStr), "%02x:%02x:%02x:%02x:%02x:%02x",
@@ -455,10 +406,6 @@ void loadSettings() {
     mqttServer = preferences.getString("mqttServer", "");
     mqttTopic = preferences.getString("mqttTopic", "tilted/data");
     brewfatherURL = preferences.getString("brewfatherURL", "");
-    influxdbURL = preferences.getString("influxdbURL", "");
-    influxdbOrg = preferences.getString("influxdbOrg", "");
-    influxdbBucket = preferences.getString("influxdbBucket", "");
-    influxdbToken = preferences.getString("influxdbToken", "");
     tiltedURL = preferences.getString("tiltedURL", "");
     tiltedUsername = preferences.getString("tiltedUsername", "");
     tiltedPassword = preferences.getString("tiltedPassword", "");
@@ -484,10 +431,6 @@ void saveSettings() {
     preferences.putString("mqttServer", mqttServer);
     preferences.putString("mqttTopic", mqttTopic);
     preferences.putString("brewfatherURL", brewfatherURL);
-    preferences.putString("influxdbURL", influxdbURL);
-    preferences.putString("influxdbOrg", influxdbOrg);
-    preferences.putString("influxdbBucket", influxdbBucket);
-    preferences.putString("influxdbToken", influxdbToken);
     preferences.putString("tiltedURL", tiltedURL);
     preferences.putString("tiltedUsername", tiltedUsername);
     preferences.putString("tiltedPassword", tiltedPassword);
@@ -507,10 +450,6 @@ String processTemplate() {
     html.replace("%MQTT_SERVER%", mqttServer);
     html.replace("%MQTT_TOPIC%", mqttTopic);
     html.replace("%BREWFATHER_URL%", brewfatherURL);
-    html.replace("%INFLUXDB_URL%", influxdbURL);
-    html.replace("%INFLUXDB_ORG%", influxdbOrg);
-    html.replace("%INFLUXDB_BUCKET%", influxdbBucket);
-    html.replace("%INFLUXDB_TOKEN%", influxdbToken);
     html.replace("%TILTED_URL%", tiltedURL);
     html.replace("%TILTED_USERNAME%", tiltedUsername);
     html.replace("%TILTED_PASSWORD%", tiltedPassword);
@@ -540,10 +479,6 @@ void startConfigMode() {
         mqttServer = server.arg("mqttServer");
         mqttTopic = server.arg("mqttTopic");
         brewfatherURL = server.arg("brewfatherURL");
-        influxdbURL = server.arg("influxdbURL");
-        influxdbOrg = server.arg("influxdbOrg");
-        influxdbBucket = server.arg("influxdbBucket");
-        influxdbToken = server.arg("influxdbToken");
         tiltedURL = server.arg("tiltedURL");
         tiltedUsername = server.arg("tiltedUsername");
         tiltedPassword = server.arg("tiltedPassword");
@@ -806,11 +741,6 @@ void loop()
         if (integrationEnabled(brewfatherURL))
         {
             publishBrewfather();
-        }
-        if (integrationEnabled(influxdbURL))
-        {
-            influxClient.setConnectionParams(influxdbURL, influxdbOrg, influxdbBucket, influxdbToken);
-            publishInfluxDB();
         }
         initEspNow();
     }
