@@ -1,7 +1,6 @@
 #include "WiFi.h"
 #include <esp_wifi.h>
 #include <esp_now.h>
-#include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <tinyexpr.h>
@@ -25,8 +24,6 @@ String deviceName = "TiltedGateway";
 String wifiSSID = "";
 String wifiPassword = "";
 String polynomial = "";
-String mqttServer = "";
-String mqttTopic = "tilted/data";
 String brewfatherURL = "";
 String tiltedURL = "";
 String tiltedUsername = "";
@@ -44,9 +41,7 @@ WebServer server(80);
 
 #define RETRY_INTERVAL 5000
 
-// MQTT config
 WiFiClient wifiClient;
-PubSubClient mqttClient(wifiClient);
 
 // Tilted
 WiFiClientSecure secureClient;
@@ -122,20 +117,6 @@ const char CONFIG_HTML[] PROGMEM = R"rawliteral(
                     <div class="form-group">
                         <label for="polynomial">Polynomial:</label>
                         <input type="text" id="polynomial" name="polynomial" value="%POLYNOMIAL%">
-                    </div>
-                </fieldset>
-            </div>
-            
-            <div class="section">
-                <fieldset>
-                    <legend>MQTT Settings</legend>
-                    <div class="form-group">
-                        <label for="mqttServer">MQTT Server:</label>
-                        <input type="text" id="mqttServer" name="mqttServer" value="%MQTT_SERVER%">
-                    </div>
-                    <div class="form-group">
-                        <label for="mqttTopic">MQTT Topic:</label>
-                        <input type="text" id="mqttTopic" name="mqttTopic" value="%MQTT_TOPIC%">
                     </div>
                 </fieldset>
             </div>
@@ -262,52 +243,6 @@ void wifiConnect()
     }
 }
 
-void reconnectMQTT()
-{
-    mqttClient.setServer(mqttServer.c_str(), 1883);
-
-    int attempts = 0;
-    while (!mqttClient.connected() && attempts < 3) {
-        if (mqttClient.connect(deviceName.c_str())) {
-            Serial.println("MQTT connected!");
-        } else {
-            Serial.print("failed, rc = ");
-            Serial.print(mqttClient.state());
-            Serial.println(" try again in 5 seconds");
-            delay(5000);
-            attempts++;
-        }
-    }
-}
-
-void publishMQTT()
-{
-    if (!mqttClient.connected())
-    {
-        reconnectMQTT();
-    }
-
-    if (!mqttClient.connected()) {
-        Serial.println("Failed to connect to MQTT server");
-        return;
-    }
-
-    const size_t capacity = JSON_OBJECT_SIZE(5);
-    DynamicJsonDocument doc(capacity);
-
-    doc["gravity"] = tiltGravity;
-    doc["tilt"] = tiltData.tilt;
-    doc["temp"] = tiltData.temp;
-    doc["volt"] = tiltData.volt;
-    doc["interval"] = tiltData.interval;
-
-    String jsonString;
-    serializeJson(doc, jsonString);
-
-    mqttClient.publish(mqttTopic.c_str(), jsonString.c_str(), true);
-    mqttClient.disconnect();
-}
-
 void publishBrewfather()
 {
     Serial.println("Sending to Brewfather...");
@@ -399,8 +334,6 @@ void loadSettings() {
     wifiSSID = preferences.getString("wifiSSID", "");
     wifiPassword = preferences.getString("wifiPassword", "");
     polynomial = preferences.getString("polynomial", "");
-    mqttServer = preferences.getString("mqttServer", "");
-    mqttTopic = preferences.getString("mqttTopic", "tilted/data");
     brewfatherURL = preferences.getString("brewfatherURL", "");
     tiltedURL = preferences.getString("tiltedURL", "");
     tiltedUsername = preferences.getString("tiltedUsername", "");
@@ -412,7 +345,6 @@ void loadSettings() {
     Serial.println("Device Name: " + deviceName);
     Serial.println("WiFi SSID: " + wifiSSID);
     Serial.println("Polynomial: " + polynomial);
-    Serial.println("MQTT Server: " + mqttServer);
     Serial.println("Tilted API URL: " + tiltedURL);
 }
 
@@ -424,8 +356,6 @@ void saveSettings() {
     preferences.putString("wifiSSID", wifiSSID);
     preferences.putString("wifiPassword", wifiPassword);
     preferences.putString("polynomial", polynomial);
-    preferences.putString("mqttServer", mqttServer);
-    preferences.putString("mqttTopic", mqttTopic);
     preferences.putString("brewfatherURL", brewfatherURL);
     preferences.putString("tiltedURL", tiltedURL);
     preferences.putString("tiltedUsername", tiltedUsername);
@@ -443,8 +373,6 @@ String processTemplate() {
     html.replace("%WIFI_SSID%", wifiSSID);
     html.replace("%WIFI_PASSWORD%", wifiPassword);
     html.replace("%POLYNOMIAL%", polynomial);
-    html.replace("%MQTT_SERVER%", mqttServer);
-    html.replace("%MQTT_TOPIC%", mqttTopic);
     html.replace("%BREWFATHER_URL%", brewfatherURL);
     html.replace("%TILTED_URL%", tiltedURL);
     html.replace("%TILTED_USERNAME%", tiltedUsername);
@@ -472,8 +400,6 @@ void startConfigMode() {
         wifiSSID = server.arg("wifiSSID");
         wifiPassword = server.arg("wifiPassword");
         polynomial = server.arg("polynomial");
-        mqttServer = server.arg("mqttServer");
-        mqttTopic = server.arg("mqttTopic");
         brewfatherURL = server.arg("brewfatherURL");
         tiltedURL = server.arg("tiltedURL");
         tiltedUsername = server.arg("tiltedUsername");
@@ -560,10 +486,6 @@ void loop()
         if (integrationEnabled(tiltedURL))
         {
             publishTilted(tiltedURL, tiltedUsername, tiltedPassword);
-        }
-        if (integrationEnabled(mqttServer))
-        {
-            publishMQTT();
         }
         if (integrationEnabled(brewfatherURL))
         {
