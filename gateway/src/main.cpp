@@ -5,16 +5,9 @@
 #include <HTTPClient.h>
 #include <tinyexpr.h>
 #include <Preferences.h>
-#include <Button2.h>
 #include <SPI.h>
 #include <CircularBuffer.h>
 #include <WebServer.h>
-
-// Button definitions
-#define BUTTON_1 35
-#define BUTTON_2 0
-Button2 btn1(BUTTON_1);
-Button2 btn2(BUTTON_2);
 
 // Preferences
 Preferences preferences;
@@ -333,12 +326,6 @@ void startConfigMode() {
     configMode = true;
 }
 
-void button1Pressed(Button2 &btn)
-{
-    Serial.println("Button pressed, going into config mode...");
-    startConfigMode();
-}
-
 // Layout constants
 #define STATUS_HEIGHT 20
 #define GRAPH_HEIGHT ((tft.height() - STATUS_HEIGHT) / 2)
@@ -362,8 +349,6 @@ void setup()
 {
     Serial.begin(115200);
 
-    btn1.setTapHandler(button1Pressed);
-
     // Load settings
     loadSettings();
 
@@ -379,8 +364,6 @@ void setup()
 
 void loop()
 {
-    btn1.loop();
-
     if (configMode)
     {
         server.handleClient();
