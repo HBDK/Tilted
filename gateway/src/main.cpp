@@ -40,14 +40,13 @@ uint8_t mac[] = {TILTED_GATEWAY_MAC[0], TILTED_GATEWAY_MAC[1], TILTED_GATEWAY_MA
 const uint8_t channel = TILTED_ESPNOW_CHANNEL;
 
 uint8_t sensorId[6];
-TiltedSensorData tiltData;
-float tiltGravity = 0;
-
-// Buffer with readings for graph display.
-// Can be either tilt value or gravity.
-CircularBuffer<float, 24> readingsHistory;
 
 volatile boolean haveReading = false;
+
+// JSON payload built from the most recent ESP-NOW packet.
+// NOTE: don't do HTTP from the ESP-NOW callback; we just stage the JSON here.
+static volatile bool havePendingPublish = false;
+static String pendingJsonBody;
 
 // HTML for configuration page
 const char CONFIG_HTML[] PROGMEM = R"rawliteral(
@@ -124,10 +123,8 @@ float round3(float value)
     return (int)(value * 1000 + 0.5) / 1000.0;
 }
 
-float calculateGravity()
+float calculateGravity(float tilt, float temp)
 {
-    double tilt = tiltData.tilt;
-    double temp = tiltData.temp;
     float gravity = 0;
     int err;
     te_variable vars[] = {{"tilt", &tilt}, {"temp", &temp}};
@@ -162,7 +159,8 @@ void receiveCallBackFunction(const uint8_t *senderMac, const uint8_t *incomingDa
     }
 
     // Reset fields; we'll fill what we find.
-    tiltData = {};
+    float tilt = 0;
+    float temp = 0;
 
     // Extract name to a printable buffer
     char name[TILTED_MAX_NAME_LEN + 1];
@@ -172,35 +170,81 @@ void receiveCallBackFunction(const uint8_t *senderMac, const uint8_t *incomingDa
     memcpy(name, view.name, nlen);
     name[nlen] = '\0';
 
+    // Build a JSON document containing only what we actually received.
+    // Brewfather requires at least a name field; other keys are optional.
+    DynamicJsonDocument doc(512);
+    doc["name"] = name;
+
+    bool haveTilt = false;
+    bool haveTemp = false;
+
     for (uint8_t i = 0; i < view.header->itemCount; i++)
     {
         const auto& it = view.items[i];
         switch ((TiltedValueType)it.type)
         {
         case TiltedValueType::Tilt:
-            // stored as value * 10^scale (usually scale=-1)
-            tiltData.tilt = (it.scale10 == -1) ? ((float)it.value / 10.0f) : (float)it.value;
+        {
+            tilt = (it.scale10 == -1) ? ((float)it.value / 10.0f) : (float)it.value;
+            doc["angle"] = tilt;
+            haveTilt = true;
+            Serial.printf("Tilt: %.2f\n", tilt);
             break;
+        }
         case TiltedValueType::Temp:
-            tiltData.temp = (it.scale10 == -1) ? ((float)it.value / 10.0f) : (float)it.value;
+        {
+            temp = (it.scale10 == -1) ? ((float)it.value / 10.0f) : (float)it.value;
+            doc["temp"] = temp;
+            doc["temp_unit"] = "C";
+            haveTemp = true;
+            Serial.printf("Temperature: %.2f\n", temp);
             break;
+        }
+        case TiltedValueType::AuxTemp:
+        {
+            float auxTemp = (it.scale10 == -1) ? ((float)it.value / 10.0f) : (float)it.value;
+            doc["aux_temp"] = auxTemp;
+            doc["aux_temp_unit"] = "C";
+            break;
+        }
         case TiltedValueType::BatteryMv:
-            tiltData.volt = it.value;
+        {
+            int32_t mv = it.value;
+            // Brewfather battery is commonly volts
+            doc["battery"] = (float)mv / 1000.0f;
+            Serial.printf("Voltage: %ld mV\n", (long)mv);
             break;
+        }
         case TiltedValueType::IntervalS:
-            tiltData.interval = it.value;
+        {
+            doc["interval"] = it.value;
+            Serial.printf("Interval: %ld s\n", (long)it.value);
             break;
+        }
+        case TiltedValueType::RssiDbm:
+        {
+            doc["rssi"] = it.value;
+            break;
+        }
         default:
             break;
         }
     }
 
-    Serial.printf("Transmitter MacAddr: %02x:%02x:%02x:%02x:%02x:%02x, ", senderMac[0], senderMac[1], senderMac[2], senderMac[3], senderMac[4], senderMac[5]);
+    // If we have tilt + temp and a polynomial configured, compute gravity.
+    if (haveTilt && haveTemp && !polynomial.isEmpty())
+    {
+        float gravity = calculateGravity(tilt, temp);
+        doc["gravity"] = gravity;
+        doc["gravity_unit"] = "G";
+    }
+
+    // Stage JSON for publishing in the main loop.
+    pendingJsonBody = String();
+    serializeJson(doc, pendingJsonBody);
+    havePendingPublish = true;
+
     Serial.printf("\nTLV name: %s chipId: %08x\n", name, (unsigned)view.header->chipId);
-    Serial.printf("Tilt: %.2f\n", tiltData.tilt);
-    Serial.printf("Temperature: %.2f\n", tiltData.temp);
-    Serial.printf("Voltage: %ld mV\n", (long)tiltData.volt);
-    Serial.printf("Interval: %ld s\n", (long)tiltData.interval);
 
     haveReading = true;
 }
@@ -253,19 +297,7 @@ void wifiConnect()
 void publishBrewfather()
 {
     Serial.println("Sending to Brewfather...");
-    const size_t capacity = JSON_OBJECT_SIZE(5);
-    DynamicJsonDocument doc(capacity);
-
-    doc["name"] = deviceName;
-    doc["temp"] = tiltData.temp;
-    doc["temp_unit"] = "C";
-    doc["gravity"] = tiltGravity;
-    doc["gravity_unit"] = "G";
-    doc["battery"] = tiltData.volt/1000.0; // Convert mV to V
-    doc["angle"] = tiltData.tilt; // Use tilt angle
-
-    String jsonBody;
-    serializeJson(doc, jsonBody);
+    String jsonBody = pendingJsonBody;
 
     Serial.println("");
     Serial.println("JSON Body:");
@@ -371,20 +403,6 @@ void startConfigMode() {
     configMode = true;
 }
 
-// Update the battery indicator based on voltage
-void updateBatteryIndicator(int voltage) {
-    // Map voltage to a battery percentage (adjust these values for your battery)
-    // Assuming 3.0V is empty and 4.2V is full for a LiPo battery
-    int percentage = map(constrain(voltage, 2800, 3400), 2800, 3400, 0, 100);
-    
-    Serial.printf("Battery: %d%% (%d mV)\n", percentage, voltage);
-}
-
-void saveReading(float reading)
-{
-    readingsHistory.push(reading);
-}
-
 void setup()
 {
     Serial.begin(115200);
@@ -412,17 +430,18 @@ void loop()
     if (haveReading)
     {
         haveReading = false;
-        tiltGravity = calculateGravity();
 
-        // Update battery indicator with each new reading
-        updateBatteryIndicator(tiltData.volt);
-        
-        saveReading(tiltGravity);
-        wifiConnect();
-        if (integrationEnabled(brewfatherURL))
+        // Only publish if we have staged JSON from the callback.
+        if (havePendingPublish)
         {
-            publishBrewfather();
+            havePendingPublish = false;
+            wifiConnect();
+            if (integrationEnabled(brewfatherURL))
+            {
+                publishBrewfather();
+            }
         }
+
         initEspNow();
     }
 }

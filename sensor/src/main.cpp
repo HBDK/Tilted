@@ -51,8 +51,6 @@ const char versionTimestamp[] = "TiltedSensor " __DATE__ " " __TIME__;
 // the following three settings must match the slave settings
 const uint8_t channel = TILTED_ESPNOW_CHANNEL;
 
-TiltedSensorData tiltData;
-
 // Build a stable sensor identifier string based on the chip id.
 // Format: "tilt-%08x" (not null-terminated on the wire).
 static uint8_t buildSensorName(char* out, uint8_t outMax)
@@ -213,11 +211,6 @@ static void sendSensorData()
 
     // Apply median filter to samples to remove outliers
     float filteredValue = medianFilter(samples, nsamples);
-    
-    tiltData.tilt = round1(filteredValue);
-    tiltData.temp = round1(temperature);
-    tiltData.volt = voltage;
-    tiltData.interval = sleep_interval;
 
     // --- Build TLV readings packet (dynamic fields) ---
     // Items we currently include:
@@ -233,7 +226,7 @@ static void sendSensorData()
         .type = (uint8_t)TiltedValueType::Tilt,
         .scale10 = -1,
         .reserved = 0,
-        .value = (int32_t)lroundf(tiltData.tilt * 10.0f),
+        .value = (int32_t)lroundf(round1(filteredValue) * 10.0f),
     };
 
     // temp: one decimal
@@ -241,7 +234,7 @@ static void sendSensorData()
         .type = (uint8_t)TiltedValueType::Temp,
         .scale10 = -1,
         .reserved = 0,
-        .value = (int32_t)lroundf(tiltData.temp * 10.0f),
+        .value = (int32_t)lroundf(round1(temperature) * 10.0f),
     };
 
     // battery: mV (integer)
@@ -249,7 +242,7 @@ static void sendSensorData()
         .type = (uint8_t)TiltedValueType::BatteryMv,
         .scale10 = 0,
         .reserved = 0,
-        .value = (int32_t)tiltData.volt,
+        .value = (int32_t)voltage,
     };
 
     // interval: seconds (integer)
@@ -257,7 +250,7 @@ static void sendSensorData()
         .type = (uint8_t)TiltedValueType::IntervalS,
         .scale10 = 0,
         .reserved = 0,
-        .value = (int32_t)tiltData.interval,
+        .value = (int32_t)sleep_interval,
     };
 
     char name[TILTED_MAX_NAME_LEN + 1];
