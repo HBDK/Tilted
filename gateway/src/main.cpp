@@ -9,6 +9,8 @@
 #include <CircularBuffer.h>
 #include <WebServer.h>
 
+#include "tilted_protocol.h"
+
 // Preferences
 Preferences preferences;
 
@@ -36,16 +38,9 @@ WiFiClient wifiClient;
 // the following three settings must match the slave settings
 uint8_t mac[] = {0x3A, 0x33, 0x33, 0x33, 0x33, 0x33};
 const uint8_t channel = 1;
-struct __attribute__((packed)) DataStruct
-{
-    float tilt;
-    float temp;
-    int volt;
-    long interval;
-};
 
 uint8_t sensorId[6];
-DataStruct tiltData;
+TiltedSensorData tiltData;
 float tiltGravity = 0;
 
 // Buffer with readings for graph display.

@@ -5,6 +5,8 @@
 #include "MPU6050.h"
 #include "credentials.h"
 
+#include "tilted_protocol.h"
+
 // Set ADC mode for voltage reading.
 ADC_MODE(ADC_VCC);
 
@@ -49,15 +51,8 @@ const char versionTimestamp[] = "TiltedSensor " __DATE__ " " __TIME__;
 // the following three settings must match the slave settings
 uint8_t remoteMac[] = {0x3A, 0x33, 0x33, 0x33, 0x33, 0x33};
 const uint8_t channel = 1;
-struct __attribute__((packed)) DataStruct
-{
-	float tilt;
-	float temp;
-	int volt;
-	long interval;
-};
 
-DataStruct tiltData;
+TiltedSensorData tiltData;
 
 // when we booted
 static unsigned long bootTime, wifiTime, mqttTime, sent, calibrationSetupStart, calibrationWifiStart = 0;
