@@ -20,3 +20,10 @@ struct __attribute__((packed)) TiltedSensorData
 
 static_assert(sizeof(TiltedSensorData) == (sizeof(float) * 2 + sizeof(int32_t) * 2),
               "Unexpected TiltedSensorData size (packing/alignment issue)");
+
+// ESP-NOW settings (must match on sender/receiver)
+inline constexpr uint8_t TILTED_ESPNOW_CHANNEL = 1;
+
+// Receiver (gateway) MAC address used by the sensor when adding a peer.
+// NOTE: This is not the sensor MAC.
+inline constexpr uint8_t TILTED_GATEWAY_MAC[6] = {0x3A, 0x33, 0x33, 0x33, 0x33, 0x33};

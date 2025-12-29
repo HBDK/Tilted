@@ -36,8 +36,8 @@ WebServer server(80);
 WiFiClient wifiClient;
 
 // the following three settings must match the slave settings
-uint8_t mac[] = {0x3A, 0x33, 0x33, 0x33, 0x33, 0x33};
-const uint8_t channel = 1;
+uint8_t mac[] = {TILTED_GATEWAY_MAC[0], TILTED_GATEWAY_MAC[1], TILTED_GATEWAY_MAC[2], TILTED_GATEWAY_MAC[3], TILTED_GATEWAY_MAC[4], TILTED_GATEWAY_MAC[5]};
+const uint8_t channel = TILTED_ESPNOW_CHANNEL;
 
 uint8_t sensorId[6];
 TiltedSensorData tiltData;

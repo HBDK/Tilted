@@ -49,8 +49,7 @@ const char versionTimestamp[] = "TiltedSensor " __DATE__ " " __TIME__;
 #define FILTER_ALPHA 0.2
 
 // the following three settings must match the slave settings
-uint8_t remoteMac[] = {0x3A, 0x33, 0x33, 0x33, 0x33, 0x33};
-const uint8_t channel = 1;
+const uint8_t channel = TILTED_ESPNOW_CHANNEL;
 
 TiltedSensorData tiltData;
 
@@ -228,7 +227,7 @@ static void sendSensorData()
     }
 
     esp_now_set_self_role(ESP_NOW_ROLE_CONTROLLER);
-    esp_now_add_peer(remoteMac, ESP_NOW_ROLE_SLAVE, channel, NULL, 0);
+    esp_now_add_peer((uint8_t*)TILTED_GATEWAY_MAC, ESP_NOW_ROLE_SLAVE, channel, NULL, 0);
 
     wifiTime = millis();
 
