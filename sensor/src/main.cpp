@@ -24,7 +24,7 @@ ADC_MODE(ADC_VCC);
 // Normal interval should be long enough to stretch out battery life. Since
 // we're using the MPU temp sensor, we're probably going to see slower
 // response times so longer intervals aren't a terrible idea.
-#define NORMAL_INTERVAL 10
+#define NORMAL_INTERVAL 30
 
 // In calibration mode, we need more frequent updates.
 // Here we define the RTC address to use and the number of iterations.
@@ -52,6 +52,23 @@ const char versionTimestamp[] = "TiltedSensor " __DATE__ " " __TIME__;
 const uint8_t channel = TILTED_ESPNOW_CHANNEL;
 
 TiltedSensorData tiltData;
+
+// Build a stable sensor identifier string based on the chip id.
+// Format: "tilt-%08x" (not null-terminated on the wire).
+static uint8_t buildSensorName(char* out, uint8_t outMax)
+{
+    if (!out || outMax == 0)
+        return 0;
+
+    // ESP8266 provides a stable 32-bit chip id.
+    uint32_t chipId = ESP.getChipId();
+    int n = snprintf(out, outMax, "tilt-%08x", (unsigned)chipId);
+    if (n <= 0)
+        return 0;
+    if (n >= outMax)
+        n = outMax - 1; // truncated (still valid, stable prefix)
+    return (uint8_t)n;
+}
 
 // when we booted
 static unsigned long bootTime, wifiTime, mqttTime, sent, calibrationSetupStart, calibrationWifiStart = 0;
@@ -202,6 +219,60 @@ static void sendSensorData()
     tiltData.volt = voltage;
     tiltData.interval = sleep_interval;
 
+    // --- Build TLV readings packet (dynamic fields) ---
+    // Items we currently include:
+    //  - tilt (0.1 deg)
+    //  - temperature (0.1 C)
+    //  - battery (mV)
+    //  - interval (seconds)
+    TiltedValueItem items[4];
+    uint8_t itemCount = 0;
+
+    // tilt: one decimal
+    items[itemCount++] = TiltedValueItem{
+        .type = (uint8_t)TiltedValueType::Tilt,
+        .scale10 = -1,
+        .reserved = 0,
+        .value = (int32_t)lroundf(tiltData.tilt * 10.0f),
+    };
+
+    // temp: one decimal
+    items[itemCount++] = TiltedValueItem{
+        .type = (uint8_t)TiltedValueType::Temp,
+        .scale10 = -1,
+        .reserved = 0,
+        .value = (int32_t)lroundf(tiltData.temp * 10.0f),
+    };
+
+    // battery: mV (integer)
+    items[itemCount++] = TiltedValueItem{
+        .type = (uint8_t)TiltedValueType::BatteryMv,
+        .scale10 = 0,
+        .reserved = 0,
+        .value = (int32_t)tiltData.volt,
+    };
+
+    // interval: seconds (integer)
+    items[itemCount++] = TiltedValueItem{
+        .type = (uint8_t)TiltedValueType::IntervalS,
+        .scale10 = 0,
+        .reserved = 0,
+        .value = (int32_t)tiltData.interval,
+    };
+
+    char name[TILTED_MAX_NAME_LEN + 1];
+    uint8_t nameLen = buildSensorName(name, sizeof(name));
+    if (nameLen > TILTED_MAX_NAME_LEN)
+        nameLen = TILTED_MAX_NAME_LEN;
+
+    uint16_t pktLen = tilted_readings_packet_size(nameLen, itemCount);
+    if (pktLen == 0)
+    {
+        Serial.println("TLV packet sizing failed; not sending");
+        actuallySleep();
+        return;
+    }
+
     // Initialize WiFi in STA mode
     WiFi.forceSleepWake();
     delay(1);
@@ -231,13 +302,37 @@ static void sendSensorData()
 
     wifiTime = millis();
 
-    uint8_t bs[sizeof(tiltData)];
-    memcpy(bs, &tiltData, sizeof(tiltData));
+    // Build packet in a stack buffer.
+    // Keep this small; ESP-NOW max payload is limited.
+    uint8_t buf[sizeof(TiltedReadingsHeader) + TILTED_MAX_NAME_LEN + sizeof(items)];
+    if (pktLen > sizeof(buf))
+    {
+        Serial.println("TLV packet too large; not sending");
+        actuallySleep();
+        return;
+    }
 
-    esp_now_send(NULL, bs, sizeof(tiltData)); // NULL means send to all peers
+    TiltedReadingsHeader hdr;
+    hdr.magic = TILTED_MAGIC;
+    hdr.version = TILTED_PROTOCOL_VERSION;
+    hdr.msgType = (uint8_t)TiltedMsgType::Readings;
+    hdr.chipId = ESP.getChipId();
+    hdr.interval_s = (uint16_t)sleep_interval;
+    hdr.nameLen = nameLen;
+    hdr.itemCount = itemCount;
+
+    uint8_t* p = buf;
+    memcpy(p, &hdr, sizeof(hdr));
+    p += sizeof(hdr);
+    memcpy(p, name, nameLen);
+    p += nameLen;
+    memcpy(p, items, (size_t)itemCount * sizeof(TiltedValueItem));
+
+    esp_now_send(NULL, buf, pktLen); // NULL means send to all peers
     sent = millis();
     mqttTime = millis();
     
+    Serial.printf("TLV sent (name=%.*s, items=%u, len=%u)\n", nameLen, name, itemCount, pktLen);
     Serial.println("Data sent, preparing to sleep");
     
     // Clean up ESP-NOW to save power

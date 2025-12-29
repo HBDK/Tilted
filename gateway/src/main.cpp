@@ -150,16 +150,57 @@ float calculateGravity()
 
 void receiveCallBackFunction(const uint8_t *senderMac, const uint8_t *incomingData, int len)
 {
-    memcpy(&tiltData, incomingData, len);
-
     // Copy the MAC address into the data structure for identification
     memcpy(sensorId, senderMac, 6);
 
+    // Accept TLV readings packets only.
+    TiltedReadingsView view{};
+    if (!(incomingData && len > 0 && tilted_decode_readings_view(incomingData, (uint16_t)len, view)))
+    {
+        Serial.printf("Ignoring non-TLV packet len=%d\n", len);
+        return;
+    }
+
+    // Reset fields; we'll fill what we find.
+    tiltData = {};
+
+    // Extract name to a printable buffer
+    char name[TILTED_MAX_NAME_LEN + 1];
+    uint8_t nlen = view.header->nameLen;
+    if (nlen > TILTED_MAX_NAME_LEN)
+        nlen = TILTED_MAX_NAME_LEN;
+    memcpy(name, view.name, nlen);
+    name[nlen] = '\0';
+
+    for (uint8_t i = 0; i < view.header->itemCount; i++)
+    {
+        const auto& it = view.items[i];
+        switch ((TiltedValueType)it.type)
+        {
+        case TiltedValueType::Tilt:
+            // stored as value * 10^scale (usually scale=-1)
+            tiltData.tilt = (it.scale10 == -1) ? ((float)it.value / 10.0f) : (float)it.value;
+            break;
+        case TiltedValueType::Temp:
+            tiltData.temp = (it.scale10 == -1) ? ((float)it.value / 10.0f) : (float)it.value;
+            break;
+        case TiltedValueType::BatteryMv:
+            tiltData.volt = it.value;
+            break;
+        case TiltedValueType::IntervalS:
+            tiltData.interval = it.value;
+            break;
+        default:
+            break;
+        }
+    }
+
     Serial.printf("Transmitter MacAddr: %02x:%02x:%02x:%02x:%02x:%02x, ", senderMac[0], senderMac[1], senderMac[2], senderMac[3], senderMac[4], senderMac[5]);
-    Serial.printf("\nTilt: %.2f, ", tiltData.tilt);
-    Serial.printf("\nTemperature: %.2f, ", tiltData.temp);
-    Serial.printf("\nVoltage: %d, ", tiltData.volt);
-    Serial.printf("\nInterval: %ld, ", tiltData.interval);
+    Serial.printf("\nTLV name: %s chipId: %08x\n", name, (unsigned)view.header->chipId);
+    Serial.printf("Tilt: %.2f\n", tiltData.tilt);
+    Serial.printf("Temperature: %.2f\n", tiltData.temp);
+    Serial.printf("Voltage: %ld mV\n", (long)tiltData.volt);
+    Serial.printf("Interval: %ld s\n", (long)tiltData.interval);
 
     haveReading = true;
 }
