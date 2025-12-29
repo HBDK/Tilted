@@ -142,6 +142,8 @@ float calculateGravity()
     {
         gravity = te_eval(expr);
         te_free(expr);
+
+        Serial.printf("\nCalculated gravity: %.3f\n", gravity);
     }
     else
     {
@@ -223,9 +225,16 @@ void publishBrewfather()
     doc["temp_unit"] = "C";
     doc["gravity"] = tiltGravity;
     doc["gravity_unit"] = "G";
+    doc["battery"] = tiltData.volt/1000.0; // Convert mV to V
+    doc["angle"] = tiltData.tilt; // Use tilt angle
 
     String jsonBody;
     serializeJson(doc, jsonBody);
+
+    Serial.println("");
+    Serial.println("JSON Body:");
+    Serial.println(jsonBody);
+    Serial.println("");
 
     HTTPClient http;
     http.begin(wifiClient, brewfatherURL.c_str());
@@ -325,11 +334,6 @@ void startConfigMode() {
     server.begin();
     configMode = true;
 }
-
-// Layout constants
-#define STATUS_HEIGHT 20
-#define GRAPH_HEIGHT ((tft.height() - STATUS_HEIGHT) / 2)
-#define DATA_SECTION_Y (STATUS_HEIGHT + GRAPH_HEIGHT)
 
 // Update the battery indicator based on voltage
 void updateBatteryIndicator(int voltage) {
