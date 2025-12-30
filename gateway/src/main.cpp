@@ -7,9 +7,9 @@
 #include <Preferences.h>
 #include <SPI.h>
 #include <CircularBuffer.h>
-#include <WebServer.h>
 
 #include "tilted_protocol.h"
+#include "config_portal.h"
 
 // Preferences
 Preferences preferences;
@@ -28,10 +28,11 @@ const char* apPassword = "tilted123";
 // Config mode flag
 bool configMode = false;
 
-// Web server
-WebServer server(80);
-
 #define RETRY_INTERVAL 5000
+
+// Hold this pin LOW during boot to force config/AP mode.
+// GPIO13 is currently unused by this firmware and not part of the display SPI pins (18/19/5/16/23/4).
+static constexpr int CONFIG_MODE_PIN = 13;
 
 WiFiClient wifiClient;
 
@@ -48,79 +49,11 @@ volatile boolean haveReading = false;
 static volatile bool havePendingPublish = false;
 static String pendingJsonBody;
 
-// HTML for configuration page
-const char CONFIG_HTML[] PROGMEM = R"rawliteral(
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Tilted Gateway Configuration</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <style>
-            body { font-family: Arial, sans-serif; margin: 0; padding: 20px; }
-            .form-group { margin-bottom: 15px; }
-            label { display: block; margin-bottom: 5px; }
-            input[type="text"], input[type="password"] { width: 100%; padding: 8px; box-sizing: border-box; }
-            button { background-color: #4CAF50; color: white; padding: 10px 15px; border: none; cursor: pointer; }
-            fieldset { margin-bottom: 20px; }
-            .section { margin-bottom: 30px; }
-        </style>
-    </head>
-    <body>
-        <h1>Tilted Gateway Configuration</h1>
-        <form action="/save" method="post">
-            <div class="section">
-                <fieldset>
-                    <legend>Device Settings</legend>
-                    <div class="form-group">
-                        <label for="deviceName">Device Name:</label>
-                        <input type="text" id="deviceName" name="deviceName" value="%DEVICE_NAME%">
-                    </div>
-                </fieldset>
-            </div>
-            
-            <div class="section">
-                <fieldset>
-                    <legend>WiFi Settings</legend>
-                    <div class="form-group">
-                        <label for="wifiSSID">WiFi SSID:</label>
-                        <input type="text" id="wifiSSID" name="wifiSSID" value="%WIFI_SSID%">
-                    </div>
-                    <div class="form-group">
-                        <label for="wifiPassword">WiFi Password:</label>
-                        <input type="password" id="wifiPassword" name="wifiPassword" value="%WIFI_PASSWORD%">
-                    </div>
-                </fieldset>
-            </div>
-            
-            <div class="section">
-                <fieldset>
-                    <legend>Calibration</legend>
-                    <div class="form-group">
-                        <label for="polynomial">Polynomial:</label>
-                        <input type="text" id="polynomial" name="polynomial" value="%POLYNOMIAL%">
-                    </div>
-                </fieldset>
-            </div>
-            
-            <div class="section">
-                <fieldset>
-                    <legend>Brewfather Settings</legend>
-                    <div class="form-group">
-                        <label for="brewfatherURL">Brewfather URL:</label>
-                        <input type="text" id="brewfatherURL" name="brewfatherURL" value="%BREWFATHER_URL%">
-                    </div>
-                </fieldset>
-            </div>
-            
-            <button type="submit">Save Configuration</button>
-        </form>
-    </body>
-    </html>
-    )rawliteral";
-
-float round3(float value)
+ConfigPortal configPortal(preferences);
+static inline float round3(float value)
 {
-    return (int)(value * 1000 + 0.5) / 1000.0;
+    // Round to 3 decimals in a way that works for negative values too.
+    return roundf(value * 1000.0f) / 1000.0f;
 }
 
 float calculateGravity(float tilt, float temp)
@@ -340,77 +273,30 @@ void loadSettings() {
     Serial.println("Polynomial: " + polynomial);
 }
 
-// Save settings to Preferences
-void saveSettings() {
-    preferences.begin("tilted", false);
-    
-    preferences.putString("deviceName", deviceName);
-    preferences.putString("wifiSSID", wifiSSID);
-    preferences.putString("wifiPassword", wifiPassword);
-    preferences.putString("polynomial", polynomial);
-    preferences.putString("brewfatherURL", brewfatherURL);
-    
-    preferences.end();
-    
-    Serial.println("Settings saved");
-}
-
-// Replace placeholders in HTML template
-String processTemplate() {
-    String html = CONFIG_HTML;
-    html.replace("%DEVICE_NAME%", deviceName);
-    html.replace("%WIFI_SSID%", wifiSSID);
-    html.replace("%WIFI_PASSWORD%", wifiPassword);
-    html.replace("%POLYNOMIAL%", polynomial);
-    html.replace("%BREWFATHER_URL%", brewfatherURL);
-    return html;
-}
-
-// Start AP mode and web server
+// Start AP mode and web server (moved to ConfigPortal)
 void startConfigMode() {
     WiFi.disconnect();
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP(apSSID, apPassword);
-    
-    Serial.println("AP Started");
-    Serial.print("IP Address: ");
-    Serial.println(WiFi.softAPIP());
-    
-    // Configure web server
-    server.on("/", HTTP_GET, []() {
-        server.send(200, "text/html", processTemplate());
-    });
-    
-    server.on("/save", HTTP_POST, []() {
-        deviceName = server.arg("deviceName");
-        wifiSSID = server.arg("wifiSSID");
-        wifiPassword = server.arg("wifiPassword");
-        polynomial = server.arg("polynomial");
-        brewfatherURL = server.arg("brewfatherURL");
-        
-        saveSettings();
-        
-        server.send(200, "text/html", 
-            "<html><head><meta http-equiv='refresh' content='5;url=/'></head>"
-            "<body><h1>Configuration Saved</h1>"
-            "<p>The device will restart in 5 seconds.</p></body></html>");
-            
-        delay(5000);
-        ESP.restart();
-    });
-    
-    server.begin();
     configMode = true;
+    haveReading = false;
+    configPortal.setApCredentials(apSSID, apPassword);
+    configPortal.start(deviceName, wifiSSID, wifiPassword, polynomial, brewfatherURL);
 }
 
 void setup()
 {
     Serial.begin(115200);
 
+    pinMode(CONFIG_MODE_PIN, INPUT_PULLUP);
+    bool forceConfigMode = (digitalRead(CONFIG_MODE_PIN) == LOW);
+
     // Load settings
     loadSettings();
 
-    if (wifiSSID.isEmpty()) {
+    if (forceConfigMode || wifiSSID.isEmpty()) {
+        if (forceConfigMode)
+        {
+            Serial.println("Forcing config mode (GPIO13 held low)");
+        }
         startConfigMode();
     } else {
         // Disconnect from AP before initializing ESP-Now.
@@ -424,7 +310,7 @@ void loop()
 {
     if (configMode)
     {
-        server.handleClient();
+        configPortal.handle();
     }
 
     if (haveReading)
