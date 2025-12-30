@@ -1,6 +1,4 @@
 #include "WiFi.h"
-#include <esp_wifi.h>
-#include <esp_now.h>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <tinyexpr.h>
@@ -10,6 +8,7 @@
 
 #include "tilted_protocol.h"
 #include "config_portal.h"
+#include "espnow_receiver.h"
 
 // Preferences
 Preferences preferences;
@@ -36,18 +35,7 @@ static constexpr int CONFIG_MODE_PIN = 13;
 
 WiFiClient wifiClient;
 
-// the following three settings must match the slave settings
-uint8_t mac[] = {TILTED_GATEWAY_MAC[0], TILTED_GATEWAY_MAC[1], TILTED_GATEWAY_MAC[2], TILTED_GATEWAY_MAC[3], TILTED_GATEWAY_MAC[4], TILTED_GATEWAY_MAC[5]};
-const uint8_t channel = TILTED_ESPNOW_CHANNEL;
-
-uint8_t sensorId[6];
-
-volatile boolean haveReading = false;
-
-// JSON payload built from the most recent ESP-NOW packet.
-// NOTE: don't do HTTP from the ESP-NOW callback; we just stage the JSON here.
-static volatile bool havePendingPublish = false;
-static String pendingJsonBody;
+EspNowReceiver espNow;
 
 ConfigPortal configPortal(preferences);
 static inline float round3(float value)
@@ -78,133 +66,13 @@ float calculateGravity(float tilt, float temp)
     return round3(gravity);
 }
 
-void receiveCallBackFunction(const uint8_t *senderMac, const uint8_t *incomingData, int len)
+static void ensureEspNow()
 {
-    // Copy the MAC address into the data structure for identification
-    memcpy(sensorId, senderMac, 6);
-
-    // Accept TLV readings packets only.
-    TiltedReadingsView view{};
-    if (!(incomingData && len > 0 && tilted_decode_readings_view(incomingData, (uint16_t)len, view)))
+    if (!espNow.begin())
     {
-        Serial.printf("Ignoring non-TLV packet len=%d\n", len);
-        return;
-    }
-
-    // Reset fields; we'll fill what we find.
-    float tilt = 0;
-    float temp = 0;
-
-    // Extract name to a printable buffer
-    char name[TILTED_MAX_NAME_LEN + 1];
-    uint8_t nlen = view.header->nameLen;
-    if (nlen > TILTED_MAX_NAME_LEN)
-        nlen = TILTED_MAX_NAME_LEN;
-    memcpy(name, view.name, nlen);
-    name[nlen] = '\0';
-
-    // Build a JSON document containing only what we actually received.
-    // Brewfather requires at least a name field; other keys are optional.
-    DynamicJsonDocument doc(512);
-    doc["name"] = name;
-
-    bool haveTilt = false;
-    bool haveTemp = false;
-
-    for (uint8_t i = 0; i < view.header->itemCount; i++)
-    {
-        const auto& it = view.items[i];
-        switch ((TiltedValueType)it.type)
-        {
-        case TiltedValueType::Tilt:
-        {
-            tilt = (it.scale10 == -1) ? ((float)it.value / 10.0f) : (float)it.value;
-            doc["angle"] = tilt;
-            haveTilt = true;
-            Serial.printf("Tilt: %.2f\n", tilt);
-            break;
-        }
-        case TiltedValueType::Temp:
-        {
-            temp = (it.scale10 == -1) ? ((float)it.value / 10.0f) : (float)it.value;
-            doc["temp"] = temp;
-            doc["temp_unit"] = "C";
-            haveTemp = true;
-            Serial.printf("Temperature: %.2f\n", temp);
-            break;
-        }
-        case TiltedValueType::AuxTemp:
-        {
-            float auxTemp = (it.scale10 == -1) ? ((float)it.value / 10.0f) : (float)it.value;
-            doc["aux_temp"] = auxTemp;
-            doc["aux_temp_unit"] = "C";
-            break;
-        }
-        case TiltedValueType::BatteryMv:
-        {
-            int32_t mv = it.value;
-            // Brewfather battery is commonly volts
-            doc["battery"] = (float)mv / 1000.0f;
-            Serial.printf("Voltage: %ld mV\n", (long)mv);
-            break;
-        }
-        case TiltedValueType::IntervalS:
-        {
-            doc["interval"] = it.value;
-            Serial.printf("Interval: %ld s\n", (long)it.value);
-            break;
-        }
-        case TiltedValueType::RssiDbm:
-        {
-            doc["rssi"] = it.value;
-            break;
-        }
-        default:
-            break;
-        }
-    }
-
-    // If we have tilt + temp and a polynomial configured, compute gravity.
-    if (haveTilt && haveTemp && !polynomial.isEmpty())
-    {
-        float gravity = calculateGravity(tilt, temp);
-        doc["gravity"] = gravity;
-        doc["gravity_unit"] = "G";
-    }
-
-    // Stage JSON for publishing in the main loop.
-    pendingJsonBody = String();
-    serializeJson(doc, pendingJsonBody);
-    havePendingPublish = true;
-
-    Serial.printf("\nTLV name: %s chipId: %08x\n", name, (unsigned)view.header->chipId);
-
-    haveReading = true;
-}
-
-void initEspNow()
-{
-    WiFi.softAPdisconnect(true);
-    WiFi.disconnect();
-    WiFi.mode(WIFI_STA);
-    esp_wifi_set_mac(WIFI_IF_STA, &mac[0]);
-    esp_wifi_set_promiscuous(true);
-    esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
-    esp_wifi_set_promiscuous(false);
-
-    Serial.println();
-    Serial.println("ESP-Now Receiver");
-    Serial.printf("Transmitter mac: %s\n", WiFi.macAddress().c_str());
-    Serial.printf("Receiver mac: %s\n", WiFi.softAPmacAddress().c_str());
-    if (esp_now_init() != ESP_OK)
-    {
-        Serial.println("ESP_Now init failed...");
         delay(RETRY_INTERVAL);
         ESP.restart();
     }
-    Serial.println(WiFi.channel());
-    esp_now_register_recv_cb(receiveCallBackFunction);
-    Serial.println("Slave ready. Waiting for messages...");
 }
 
 void wifiConnect()
@@ -230,7 +98,7 @@ void wifiConnect()
 void publishBrewfather()
 {
     Serial.println("Sending to Brewfather...");
-    String jsonBody = pendingJsonBody;
+    String jsonBody = espNow.takePendingJson();
 
     Serial.println("");
     Serial.println("JSON Body:");
@@ -277,7 +145,7 @@ void loadSettings() {
 void startConfigMode() {
     WiFi.disconnect();
     configMode = true;
-    haveReading = false;
+    espNow.clearPending();
     configPortal.setApCredentials(apSSID, apPassword);
     configPortal.start(deviceName, wifiSSID, wifiPassword, polynomial, brewfatherURL);
 }
@@ -302,7 +170,7 @@ void setup()
         // Disconnect from AP before initializing ESP-Now.
         // This is needed because IoTWebConf for some reason sets up the AP with init().
         //WiFi.softAPdisconnect(true);
-        initEspNow();
+        ensureEspNow();
     }
 }
 
@@ -313,21 +181,14 @@ void loop()
         configPortal.handle();
     }
 
-    if (haveReading)
+    if (espNow.hasPending())
     {
-        haveReading = false;
-
-        // Only publish if we have staged JSON from the callback.
-        if (havePendingPublish)
+        wifiConnect();
+        if (integrationEnabled(brewfatherURL))
         {
-            havePendingPublish = false;
-            wifiConnect();
-            if (integrationEnabled(brewfatherURL))
-            {
-                publishBrewfather();
-            }
+            publishBrewfather();
         }
 
-        initEspNow();
+        ensureEspNow();
     }
 }
