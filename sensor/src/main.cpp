@@ -6,6 +6,7 @@
 #include "credentials.h"
 
 #include "tilted_protocol.h"
+#include "tilted_value_helper.h"
 
 // Set ADC mode for voltage reading.
 ADC_MODE(ADC_VCC);
@@ -24,7 +25,7 @@ ADC_MODE(ADC_VCC);
 // Normal interval should be long enough to stretch out battery life. Since
 // we're using the MPU temp sensor, we're probably going to see slower
 // response times so longer intervals aren't a terrible idea.
-#define NORMAL_INTERVAL 30
+#define NORMAL_INTERVAL 120
 
 // In calibration mode, we need more frequent updates.
 // Here we define the RTC address to use and the number of iterations.
@@ -47,9 +48,6 @@ const char versionTimestamp[] = "TiltedSensor " __DATE__ " " __TIME__;
 
 // Low-pass filter coefficient (0 = no filtering, 1 = ignore new readings)
 #define FILTER_ALPHA 0.2
-
-// the following three settings must match the slave settings
-const uint8_t channel = TILTED_ESPNOW_CHANNEL;
 
 // Build a stable sensor identifier string based on the chip id.
 // Format: "tilt-%08x" (not null-terminated on the wire).
@@ -88,10 +86,6 @@ RF_PRE_INIT()
 {
 	bootTime = millis();
 }
-
-// Disable RF calibration after deep-sleep wake up.
-// This is probably not needed.
-//RF_MODE(RF_NO_CAL);
 
 //------------------------------------------------------------
 static MPU6050 mpu;
@@ -200,11 +194,6 @@ static unsigned int nsamples = 0;
 static float samples[MAX_SAMPLES];
 static float temperature = 0.0;
 
-float round1(float value)
-{
-	return (int)(value * 10 + 0.5) / 10.0;
-}
-
 static void sendSensorData()
 {
     Serial.println("Processing and sending data...");
@@ -221,37 +210,10 @@ static void sendSensorData()
     TiltedValueItem items[4];
     uint8_t itemCount = 0;
 
-    // tilt: one decimal
-    items[itemCount++] = TiltedValueItem{
-        .type = (uint8_t)TiltedValueType::Tilt,
-        .scale10 = -1,
-        .reserved = 0,
-        .value = (int32_t)lroundf(round1(filteredValue) * 10.0f),
-    };
-
-    // temp: one decimal
-    items[itemCount++] = TiltedValueItem{
-        .type = (uint8_t)TiltedValueType::Temp,
-        .scale10 = -1,
-        .reserved = 0,
-        .value = (int32_t)lroundf(round1(temperature) * 10.0f),
-    };
-
-    // battery: mV (integer)
-    items[itemCount++] = TiltedValueItem{
-        .type = (uint8_t)TiltedValueType::BatteryMv,
-        .scale10 = 0,
-        .reserved = 0,
-        .value = (int32_t)voltage,
-    };
-
-    // interval: seconds (integer)
-    items[itemCount++] = TiltedValueItem{
-        .type = (uint8_t)TiltedValueType::IntervalS,
-        .scale10 = 0,
-        .reserved = 0,
-        .value = (int32_t)sleep_interval,
-    };
+    items[itemCount++] = TiltedValueHelper::tiltDeg(filteredValue);
+    items[itemCount++] = TiltedValueHelper::tempC(temperature);
+    items[itemCount++] = TiltedValueHelper::batteryMv(voltage);
+    items[itemCount++] = TiltedValueHelper::intervalS(sleep_interval);
 
     char name[TILTED_MAX_NAME_LEN + 1];
     uint8_t nameLen = buildSensorName(name, sizeof(name));
@@ -291,7 +253,7 @@ static void sendSensorData()
     }
 
     esp_now_set_self_role(ESP_NOW_ROLE_CONTROLLER);
-    esp_now_add_peer((uint8_t*)TILTED_GATEWAY_MAC, ESP_NOW_ROLE_SLAVE, channel, NULL, 0);
+    esp_now_add_peer((uint8_t*)TILTED_GATEWAY_MAC, ESP_NOW_ROLE_SLAVE, TILTED_ESPNOW_CHANNEL, NULL, 0);
 
     wifiTime = millis();
 
