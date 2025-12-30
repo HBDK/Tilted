@@ -28,7 +28,7 @@ ADC_MODE(ADC_VCC);
 // Normal interval should be long enough to stretch out battery life. Since
 // we're using the MPU temp sensor, we're probably going to see slower
 // response times so longer intervals aren't a terrible idea.
-#define NORMAL_INTERVAL 800
+#define NORMAL_INTERVAL 1200
 
 // In calibration mode, we need more frequent updates.
 // Here we define the RTC address to use and the number of iterations.
