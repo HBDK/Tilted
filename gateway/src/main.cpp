@@ -1,7 +1,6 @@
 #include "WiFi.h"
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
-#include <tinyexpr.h>
 #include <Preferences.h>
 #include <SPI.h>
 #include <CircularBuffer.h>
@@ -17,7 +16,7 @@ Preferences preferences;
 String deviceName = "TiltedGateway";
 String wifiSSID = "";
 String wifiPassword = "";
-String polynomial = "";
+String polynomial = "";// somthing like "0.5013885598189161 + 0.019948730468857152 *tilt" use https://www.ispindel.de/tools/calibration/calibration.htm for calibration
 String brewfatherURL = "";
 
 // AP mode settings
@@ -38,33 +37,6 @@ WiFiClient wifiClient;
 EspNowReceiver espNow;
 
 ConfigPortal configPortal(preferences);
-static inline float round3(float value)
-{
-    // Round to 3 decimals in a way that works for negative values too.
-    return roundf(value * 1000.0f) / 1000.0f;
-}
-
-float calculateGravity(float tilt, float temp)
-{
-    float gravity = 0;
-    int err;
-    te_variable vars[] = {{"tilt", &tilt}, {"temp", &temp}};
-    te_expr *expr = te_compile(polynomial.c_str(), vars, 2, &err);
-
-    if (expr)
-    {
-        gravity = te_eval(expr);
-        te_free(expr);
-
-        Serial.printf("\nCalculated gravity: %.3f\n", gravity);
-    }
-    else
-    {
-        Serial.printf("Could not calculate gravity. Parse error at %d\n", err);
-    }
-
-    return round3(gravity);
-}
 
 static void ensureEspNow()
 {
@@ -139,6 +111,9 @@ void loadSettings() {
     Serial.println("Device Name: " + deviceName);
     Serial.println("WiFi SSID: " + wifiSSID);
     Serial.println("Polynomial: " + polynomial);
+
+    // Make sure the ESP-NOW module has the latest polynomial so it can compute gravity in-callback.
+    espNow.setPolynomial(polynomial);
 }
 
 // Start AP mode and web server (moved to ConfigPortal)
@@ -148,6 +123,9 @@ void startConfigMode() {
     espNow.clearPending();
     configPortal.setApCredentials(apSSID, apPassword);
     configPortal.start(deviceName, wifiSSID, wifiPassword, polynomial, brewfatherURL);
+
+    // While in config mode the polynomial may change; keep receiver updated.
+    espNow.setPolynomial(polynomial);
 }
 
 void setup()

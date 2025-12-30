@@ -15,6 +15,10 @@ public:
     // Uses shared gateway MAC + shared ESPNOW channel constants.
     EspNowReceiver();
 
+    // Provide polynomial used for gravity calculation.
+    // If empty, gravity will not be computed.
+    void setPolynomial(const String& polynomial);
+
     // Initializes WiFi STA + ESP-NOW, sets MAC/channel, registers callback.
     // Returns true on success.
     bool begin();
@@ -35,6 +39,8 @@ private:
 private:
     uint8_t staMac_[6]{};
     uint8_t channel_ = 1;
+
+    String polynomial_;
 
     // Staged publish payload.
     volatile bool havePending_ = false;

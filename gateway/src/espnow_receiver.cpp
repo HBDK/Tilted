@@ -6,6 +6,8 @@
 
 #include <ArduinoJson.h>
 
+#include <tinyexpr.h>
+
 #include "tilted_protocol.h"
 
 EspNowReceiver* EspNowReceiver::self_ = nullptr;
@@ -22,6 +24,11 @@ EspNowReceiver::EspNowReceiver()
     };
     memcpy(staMac_, defaultMac, 6);
     channel_ = TILTED_ESPNOW_CHANNEL;
+}
+
+void EspNowReceiver::setPolynomial(const String& polynomial)
+{
+    polynomial_ = polynomial;
 }
 
 bool EspNowReceiver::begin()
@@ -85,6 +92,35 @@ void EspNowReceiver::recvCb(const uint8_t* senderMac, const uint8_t* incomingDat
 static inline float round3(float value)
 {
     return roundf(value * 1000.0f) / 1000.0f;
+}
+
+static inline float round5(float value)
+{
+    return roundf(value * 100000.0f) / 100000.0f;
+}
+
+static float calculateGravityFromPolynomial(const String& polynomial, double tilt, double temp)
+{
+    if (polynomial.isEmpty())
+        return NAN;
+
+    Serial.printf("Calculating gravity from polynomial: '%s'\n", polynomial.c_str());
+    Serial.printf("tilt=%.3f temp=%.3f\n", tilt, temp);
+
+    int err = 0;
+    te_variable vars[] = {{"tilt", &tilt}, {"temp", &temp}};
+    te_expr* expr = te_compile(polynomial.c_str(), vars, 2, &err);
+    if (!expr)
+    {
+        Serial.printf("Could not calculate gravity. Parse error at %d\n", err);
+        return NAN;
+    }
+
+    float gravity = (float)te_eval(expr);
+    te_free(expr);
+    gravity = round5(gravity);
+    Serial.printf("Calculated gravity: %.5f\n", gravity);
+    return gravity;
 }
 
 void EspNowReceiver::onRecv(const uint8_t* senderMac, const uint8_t* incomingData, int len)
@@ -158,9 +194,16 @@ void EspNowReceiver::onRecv(const uint8_t* senderMac, const uint8_t* incomingDat
         }
     }
 
-    // NOTE: gravity calculation (polynomial) stays in main.cpp for now,
-    // since it depends on the current polynomial string + tinyexpr.
-    // We only include raw values here.
+    // Gravity calculation: if we have tilt + temp and a polynomial configured, compute gravity.
+    if (haveTilt && haveTemp && !polynomial_.isEmpty())
+    {
+        float gravity = calculateGravityFromPolynomial(polynomial_, tilt, temp);
+        if (!isnan(gravity))
+        {
+            doc["gravity"] = gravity;
+            doc["gravity_unit"] = "G";
+        }
+    }
 
     pendingJson_ = String();
     serializeJson(doc, pendingJson_);
