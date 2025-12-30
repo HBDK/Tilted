@@ -6,7 +6,10 @@
 #include "credentials.h"
 
 #include "tilted_protocol.h"
+#include "tilted_sensor_id.h"
+#include "tilted_packet_builder.h"
 #include "tilted_value_helper.h"
+#include "tilted_filters.h"
 
 // Set ADC mode for voltage reading.
 ADC_MODE(ADC_VCC);
@@ -38,36 +41,11 @@ ADC_MODE(ADC_VCC);
 #define CALIBRATION_SETUP_TIME 30000
 #define WIFI_TIMEOUT 10000
 
-// When the battery cell (LiFePO4 in this case) gets this low,
-// the ESP switches to every LOW_VOLTAGE_MULTIPLIER*SLEEP_UPDATE_INTERVAL second updates.
-#define LOW_VOLTAGE_THRESHOLD 3000
-#define LOW_VOLTAGE_MULTIPLIER 4
-
 // Version identifier for OTA.
 const char versionTimestamp[] = "TiltedSensor " __DATE__ " " __TIME__;
 
-// Low-pass filter coefficient (0 = no filtering, 1 = ignore new readings)
-#define FILTER_ALPHA 0.2
-
-// Build a stable sensor identifier string based on the chip id.
-// Format: "tilt-%08x" (not null-terminated on the wire).
-static uint8_t buildSensorName(char* out, uint8_t outMax)
-{
-    if (!out || outMax == 0)
-        return 0;
-
-    // ESP8266 provides a stable 32-bit chip id.
-    uint32_t chipId = ESP.getChipId();
-    int n = snprintf(out, outMax, "tilt-%08x", (unsigned)chipId);
-    if (n <= 0)
-        return 0;
-    if (n >= outMax)
-        n = outMax - 1; // truncated (still valid, stable prefix)
-    return (uint8_t)n;
-}
-
 // when we booted
-static unsigned long bootTime, wifiTime, mqttTime, sent, calibrationSetupStart, calibrationWifiStart = 0;
+static unsigned long bootTime, wifiTime, sent, calibrationSetupStart, calibrationWifiStart = 0;
 
 uint32_t calibrationIterations = 0;
 
@@ -119,36 +97,6 @@ static float calculateTilt(float ax, float az, float ay)
 	return acos(az / (sqrt(ax * ax + ay * ay + az * az))) * 180.0 / PI;
 }
 
-// Apply median filter to remove outliers
-static float medianFilter(float values[], int size)
-{
-    // Create a copy of the array for sorting
-    float temp[size];
-    for (int i = 0; i < size; i++) {
-        temp[i] = values[i];
-    }
-    
-    // Simple bubble sort
-    for (int i = 0; i < size - 1; i++) {
-        for (int j = 0; j < size - i - 1; j++) {
-            if (temp[j] > temp[j + 1]) {
-                float swap = temp[j];
-                temp[j] = temp[j + 1];
-                temp[j + 1] = swap;
-            }
-        }
-    }
-    
-    // Return middle value for odd-sized array
-    if (size % 2 == 1) {
-        return temp[size / 2];
-    } 
-    // Return average of two middle values for even-sized array
-    else {
-        return (temp[size / 2 - 1] + temp[size / 2]) / 2.0;
-    }
-}
-
 static void actuallySleep()
 {
     // Put MPU to sleep if not already done
@@ -161,17 +109,10 @@ static void actuallySleep()
 
     double uptime = (millis() - bootTime) / 1000.;
 
-    long willsleep = sleep_interval - uptime;
-    if (willsleep <= sleep_interval / 2)
-    {
-        // If we somehow ended up awake longer than half a sleep interval,
-        // sleep longer. This shouldn't happen in practice.
-        willsleep = sleep_interval;
-    }
-    Serial.printf("bootTime: %ld WifiTime: %ld mqttTime: %ld\n", bootTime, wifiTime, mqttTime);
-    Serial.printf("Deep sleeping %ld seconds after %.3g awake\n", willsleep, uptime);
+    Serial.printf("bootTime: %ld WifiTime: %ld\n", bootTime, wifiTime);
+    Serial.printf("Deep sleeping %ld seconds after %.3g awake\n", sleep_interval, uptime);
 
-    ESP.deepSleepInstant(willsleep * 1000000, WAKE_NO_RFCAL);
+    ESP.deepSleepInstant(sleep_interval * 1000000, WAKE_NO_RFCAL);
 }
 
 //-----------------------------------------------------------------
@@ -198,8 +139,8 @@ static void sendSensorData()
 {
     Serial.println("Processing and sending data...");
 
-    // Apply median filter to samples to remove outliers
-    float filteredValue = medianFilter(samples, nsamples);
+    // Median of our fixed-size window (MAX_SAMPLES)
+    float filteredValue = tilted_median(samples);
 
     // --- Build TLV readings packet (dynamic fields) ---
     // Items we currently include:
@@ -216,7 +157,7 @@ static void sendSensorData()
     items[itemCount++] = TiltedValueHelper::intervalS(sleep_interval);
 
     char name[TILTED_MAX_NAME_LEN + 1];
-    uint8_t nameLen = buildSensorName(name, sizeof(name));
+    uint8_t nameLen = tilted_build_name_from_type(name, sizeof(name), "tilt");
     if (nameLen > TILTED_MAX_NAME_LEN)
         nameLen = TILTED_MAX_NAME_LEN;
 
@@ -267,23 +208,26 @@ static void sendSensorData()
         return;
     }
 
-    TiltedReadingsHeader hdr;
-    hdr.magic = TILTED_MAGIC;
-    hdr.chipId = ESP.getChipId();
-    hdr.interval_s = (uint16_t)sleep_interval;
-    hdr.nameLen = nameLen;
-    hdr.itemCount = itemCount;
+    const uint32_t chipId = tilted_get_chip_id32();
+    const uint16_t wrote = tilted_encode_readings_packet(
+        buf,
+        sizeof(buf),
+        chipId,
+        (uint16_t)sleep_interval,
+        name,
+        nameLen,
+        items,
+        itemCount);
 
-    uint8_t* p = buf;
-    memcpy(p, &hdr, sizeof(hdr));
-    p += sizeof(hdr);
-    memcpy(p, name, nameLen);
-    p += nameLen;
-    memcpy(p, items, (size_t)itemCount * sizeof(TiltedValueItem));
+    if (wrote != pktLen)
+    {
+        Serial.println("Failed to encode TLV packet; not sending");
+        actuallySleep();
+        return;
+    }
 
     esp_now_send(NULL, buf, pktLen); // NULL means send to all peers
     sent = millis();
-    mqttTime = millis();
     
     Serial.printf("TLV sent (name=%.*s, items=%u, len=%u)\n", nameLen, name, itemCount, pktLen);
     Serial.println("Data sent, preparing to sleep");
@@ -317,13 +261,6 @@ static bool isCalibrationMode()
 void normalMode()
 {
 	readVoltage();
-	Serial.println(voltage);
-	bool lowv = !(voltage != 0 && voltage > LOW_VOLTAGE_THRESHOLD);
-	if (lowv)
-	{
-		Serial.println("Voltage below threshold, sleeping longer");
-		sleep_interval *= LOW_VOLTAGE_MULTIPLIER;
-	}
 }
 
 void wifiConnect()
