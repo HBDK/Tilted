@@ -269,8 +269,6 @@ static void sendSensorData()
 
     TiltedReadingsHeader hdr;
     hdr.magic = TILTED_MAGIC;
-    hdr.version = TILTED_PROTOCOL_VERSION;
-    hdr.msgType = (uint8_t)TiltedMsgType::Readings;
     hdr.chipId = ESP.getChipId();
     hdr.interval_s = (uint16_t)sleep_interval;
     hdr.nameLen = nameLen;

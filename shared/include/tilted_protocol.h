@@ -16,16 +16,6 @@ inline constexpr uint8_t TILTED_GATEWAY_MAC[6] = {0x3A, 0x33, 0x33, 0x33, 0x33, 
 // TLV (typed readings) protocol
 // -----------------------------
 
-// Keep this small and stable. If you change the wire format, bump TILTED_PROTOCOL_VERSION
-// and keep the old decoder around in the gateway for a while.
-inline constexpr uint8_t TILTED_PROTOCOL_VERSION = 1;
-
-enum class TiltedMsgType : uint8_t
-{
-    Legacy = 0,     // TiltedSensorData (no explicit header)
-    Readings = 1,   // TiltedReadingsHeader + name + items
-};
-
 // Reading types. Add new ones at the end.
 // These should map cleanly to Brewfather custom stream concepts.
 enum class TiltedValueType : uint8_t
@@ -48,8 +38,6 @@ inline constexpr uint8_t TILTED_MAX_NAME_LEN = 24;
 struct __attribute__((packed)) TiltedReadingsHeader
 {
     uint16_t magic;       // TILTED_MAGIC
-    uint8_t version;      // TILTED_PROTOCOL_VERSION
-    uint8_t msgType;      // TiltedMsgType
     uint32_t chipId;      // ESP.getChipId() on ESP8266; on ESP32 use lower 32 bits of MAC
     uint16_t interval_s;  // intended sleep interval
     uint8_t nameLen;      // bytes following header (not null-terminated)
@@ -70,7 +58,7 @@ struct __attribute__((packed)) TiltedValueItem
     int32_t value;
 };
 
-static_assert(sizeof(TiltedReadingsHeader) == 12, "Unexpected TiltedReadingsHeader size");
+static_assert(sizeof(TiltedReadingsHeader) == 10, "Unexpected TiltedReadingsHeader size");
 static_assert(sizeof(TiltedValueItem) == 8, "Unexpected TiltedValueItem size");
 
 // Compute total packet size (header + name + items). Returns 0 if invalid/unrepresentable.
@@ -102,10 +90,6 @@ static inline bool tilted_decode_readings_view(const uint8_t* buf, uint16_t len,
 
     auto hdr = reinterpret_cast<const TiltedReadingsHeader*>(buf);
     if (hdr->magic != TILTED_MAGIC)
-        return false;
-    if (hdr->version != TILTED_PROTOCOL_VERSION)
-        return false;
-    if (hdr->msgType != (uint8_t)TiltedMsgType::Readings)
         return false;
     if (hdr->nameLen > TILTED_MAX_NAME_LEN)
         return false;
