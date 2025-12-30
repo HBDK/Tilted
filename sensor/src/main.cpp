@@ -28,7 +28,7 @@ ADC_MODE(ADC_VCC);
 // Normal interval should be long enough to stretch out battery life. Since
 // we're using the MPU temp sensor, we're probably going to see slower
 // response times so longer intervals aren't a terrible idea.
-#define NORMAL_INTERVAL 120
+#define NORMAL_INTERVAL 800
 
 // In calibration mode, we need more frequent updates.
 // Here we define the RTC address to use and the number of iterations.
@@ -283,14 +283,24 @@ void wifiConnect()
 
 void checkOTAUpdate()
 {
+    // Enable verbose updater output on Serial (helps diagnose resets happening inside update()).
+    ESPhttpUpdate.setLedPin(LED_BUILTIN, LOW);
+    ESPhttpUpdate.rebootOnUpdate(false);
+    Serial.setDebugOutput(true);
+
 	WiFiClient wifiClient;
 	wifiConnect();
+    Serial.printf("[OTA] About to call ESPhttpUpdate.update(%s:%u%s)\n", OTA_SERVER, OTA_PORT, OTA_PATH);
+    Serial.flush();
 
 	t_httpUpdate_return ret = ESPhttpUpdate.update(wifiClient, OTA_SERVER, OTA_PORT, OTA_PATH, versionTimestamp);
+    Serial.printf("[OTA] ESPhttpUpdate.update returned: %d\n", (int)ret);
 	switch (ret)
 	{
 	case HTTP_UPDATE_FAILED:
-		Serial.println("[OTA] Update failed.");
+        Serial.printf("[OTA] Update failed. Error (%d): %s\n",
+            ESPhttpUpdate.getLastError(),
+            ESPhttpUpdate.getLastErrorString().c_str());
 		break;
 	case HTTP_UPDATE_NO_UPDATES:
 		Serial.println("[OTA] No update available.");
@@ -299,6 +309,8 @@ void checkOTAUpdate()
 		Serial.println("[OTA] Update ok."); // may not be called since we reboot the ESP
 		break;
 	}
+
+    Serial.flush();
 }
 
 void setup()
