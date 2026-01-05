@@ -2,6 +2,17 @@
 #include <ESP8266httpUpdate.h>
 #include <espnow.h>
 #include <Wire.h>
+
+// Optional DS18B20 support
+// Enable by defining: -DTILTED_ENABLE_DS18B20=1 (see sensor/platformio.ini)
+#ifndef TILTED_ENABLE_DS18B20
+#define TILTED_ENABLE_DS18B20 0
+#endif
+
+#if TILTED_ENABLE_DS18B20
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#endif
 #include "MPU6050.h"
 #include "credentials.h"
 
@@ -21,6 +32,11 @@ ADC_MODE(ADC_VCC);
 // I2C pins
 #define SDA_PIN 4
 #define SCL_PIN 5
+
+// DS18B20 (1-Wire) pin (free GPIO on ESP-12E).
+// Wiring reminder: DS18B20 data needs a 4.7k pull-up to 3.3V.
+// Optional: only used when TILTED_ENABLE_DS18B20=1
+#define ONE_WIRE_PIN 14 // GPIO14 / D5
 
 // number of tilt samples to average
 #define MAX_SAMPLES 5
@@ -68,6 +84,11 @@ RF_PRE_INIT()
 //------------------------------------------------------------
 static MPU6050 mpu;
 static long sleep_interval = NORMAL_INTERVAL;
+
+#if TILTED_ENABLE_DS18B20
+static OneWire oneWire(ONE_WIRE_PIN);
+static DallasTemperature ds18b20(&oneWire);
+#endif
 
 //------------------------------------------------------------
 static const int led = LED_BUILTIN;
@@ -135,6 +156,18 @@ static unsigned int nsamples = 0;
 static float samples[MAX_SAMPLES];
 static float temperature = 0.0;
 
+#if TILTED_ENABLE_DS18B20
+static float auxTemperature = NAN;
+#endif
+
+// TLV item capacity depends on optional sensors.
+// Base fields: tilt, temp, battery, interval
+#if TILTED_ENABLE_DS18B20
+static constexpr uint8_t TILTED_ITEM_CAPACITY = 5;
+#else
+static constexpr uint8_t TILTED_ITEM_CAPACITY = 4;
+#endif
+
 static void sendSensorData()
 {
     Serial.println("Processing and sending data...");
@@ -148,11 +181,19 @@ static void sendSensorData()
     //  - temperature (0.1 C)
     //  - battery (mV)
     //  - interval (seconds)
-    TiltedValueItem items[4];
+    TiltedValueItem items[TILTED_ITEM_CAPACITY];
     uint8_t itemCount = 0;
 
     items[itemCount++] = TiltedValueHelper::tiltDeg(filteredValue);
     items[itemCount++] = TiltedValueHelper::tempC(temperature);
+
+    // Optional DS18B20 aux temperature.
+#if TILTED_ENABLE_DS18B20
+    if (isfinite(auxTemperature))
+    {
+        items[itemCount++] = TiltedValueHelper::auxTempC(auxTemperature);
+    }
+#endif
     items[itemCount++] = TiltedValueHelper::batteryMv(voltage);
     items[itemCount++] = TiltedValueHelper::intervalS(sleep_interval);
 
@@ -346,6 +387,11 @@ void setup()
 	mpu.setRate(17);
 	mpu.setIntDataReadyEnabled(true);
 
+    // Initialize DS18B20 (optional)
+#if TILTED_ENABLE_DS18B20
+    ds18b20.begin();
+#endif
+
 	// Read RTC memory to get current number of calibration iterations.
 	ESP.rtcUserMemoryRead(RTC_ADDRESS, &calibrationIterations, sizeof(calibrationIterations));
 
@@ -415,6 +461,20 @@ void loop()
                     // As soon as we have all our samples, read the temperature.
                     // This offset is from the MPU documentation. Displays temperature in degrees C.
                     temperature = mpu.getTemperature() / 340.0 + 36.53;
+
+                    // Read DS18B20 temp (aux) if enabled.
+#if TILTED_ENABLE_DS18B20
+                    // This can take up to ~750ms at 12-bit; library handles timing.
+                    auxTemperature = NAN;
+                    ds18b20.requestTemperatures();
+                    {
+                        const float t = ds18b20.getTempCByIndex(0);
+                        if (t > -100.0f && t < 150.0f)
+                        {
+                            auxTemperature = t;
+                        }
+                    }
+#endif
                     
                     // Put the MPU back to sleep immediately after data collection
                     putMpuToSleep();
