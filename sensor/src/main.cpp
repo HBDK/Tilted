@@ -144,12 +144,6 @@ static inline int readVoltage()
     return (voltage = sum / readings);
 }
 
-//--------------------------------------------------------------
-
-#if TILTED_ENABLE_DS18B20
-static float auxTemperature = NAN;
-#endif
-
 // TLV item capacity depends on optional sensors.
 // Base fields: tilt, temp, battery, interval
 #if TILTED_ENABLE_DS18B20
@@ -179,6 +173,7 @@ static void sendSensorData()
 
     // Optional DS18B20 aux temperature.
 #if TILTED_ENABLE_DS18B20
+    float auxTemperature = ds18b20Sampler.temperatureC();
     if (isfinite(auxTemperature))
     {
         items[itemCount++] = TiltedValueHelper::auxTempC(auxTemperature);
@@ -442,15 +437,14 @@ void loop()
 #if TILTED_ENABLE_DS18B20
                 if (ds18b20Sampler.pending())
                     ds18b20Sampler.sample();
-                const bool allReady = mpuSampler.ready() && ds18b20Sampler.ready();
+                const bool nonePending = !mpuSampler.pending() && !ds18b20Sampler.pending();
 #else
-                const bool allReady = mpuSampler.ready();
+                const bool nonePending = !mpuSampler.pending();
 #endif
 
-                if (allReady) {
-#if TILTED_ENABLE_DS18B20
-                    auxTemperature = ds18b20Sampler.temperatureC();
-#endif
+                // Move on once everything has finished its work for this cycle.
+                // We keep ready() for future changes, but we don't require it here.
+                if (nonePending) {
                     // Put the MPU back to sleep immediately after data collection
                     mpuSampler.sleep();
                     Serial.println("MPU put to sleep");
