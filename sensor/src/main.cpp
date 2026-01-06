@@ -13,8 +13,9 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #endif
-#include "MPU6050.h"
 #include "credentials.h"
+
+#include "mpu_sampler.h"
 
 #include "tilted_protocol.h"
 #include "tilted_sensor_id.h"
@@ -82,8 +83,9 @@ RF_PRE_INIT()
 }
 
 //------------------------------------------------------------
-static MPU6050 mpu;
 static long sleep_interval = NORMAL_INTERVAL;
+
+static MpuSampler mpuSampler(MAX_SAMPLES);
 
 #if TILTED_ENABLE_DS18B20
 static OneWire oneWire(ONE_WIRE_PIN);
@@ -102,26 +104,12 @@ static inline void ledOff()
 	digitalWrite(led, HIGH);
 }
 
-//-----------------------------------------------------------------
-static void putMpuToSleep()
-{
-	mpu.setSleepEnabled(true);
-    Serial.println("MPU put to sleep");
-}
-
-// Calculate tilt angle from accelerometer readings
-static float calculateTilt(float ax, float az, float ay)
-{
-	if (ax == 0 && ay == 0 && az == 0)
-		return 0.f;
-
-	return acos(az / (sqrt(ax * ax + ay * ay + az * az))) * 180.0 / PI;
-}
 
 static void actuallySleep()
 {
     // Put MPU to sleep if not already done
-    putMpuToSleep();
+    mpuSampler.sleep();
+    Serial.println("MPU put to sleep");
     
     // Turn off WiFi completely to save power
     WiFi.mode(WIFI_OFF);
@@ -152,9 +140,6 @@ static inline int readVoltage()
 }
 
 //--------------------------------------------------------------
-static unsigned int nsamples = 0;
-static float samples[MAX_SAMPLES];
-static float temperature = 0.0;
 
 #if TILTED_ENABLE_DS18B20
 static float auxTemperature = NAN;
@@ -172,8 +157,8 @@ static void sendSensorData()
 {
     Serial.println("Processing and sending data...");
 
-    // Median of our fixed-size window (MAX_SAMPLES)
-    float filteredValue = tilted_median(samples);
+    // Median-filtered tilt over our sample window.
+    float filteredValue = mpuSampler.filteredTiltDeg();
 
     // --- Build TLV readings packet (dynamic fields) ---
     // Items we currently include:
@@ -185,7 +170,7 @@ static void sendSensorData()
     uint8_t itemCount = 0;
 
     items[itemCount++] = TiltedValueHelper::tiltDeg(filteredValue);
-    items[itemCount++] = TiltedValueHelper::tempC(temperature);
+    items[itemCount++] = TiltedValueHelper::tempC(mpuSampler.tempC());
 
     // Optional DS18B20 aux temperature.
 #if TILTED_ENABLE_DS18B20
@@ -373,19 +358,9 @@ void setup()
 
 	// INITIALIZE MPU
 	Serial.println("Starting MPU-6050");
-	Wire.begin(SDA_PIN, SCL_PIN);
-	Wire.setClock(400000);
-
-	mpu.initialize();
-	mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_2);
-	mpu.setFullScaleGyroRange(MPU6050_GYRO_FS_250);
-	mpu.setDLPFMode(MPU6050_DLPF_BW_5);
-	mpu.setTempSensorEnabled(true);
-	mpu.setInterruptLatch(0); // pulse
-	mpu.setInterruptMode(1);  // Active Low
-	mpu.setInterruptDrive(1); // Open drain
-	mpu.setRate(17);
-	mpu.setIntDataReadyEnabled(true);
+    Wire.begin(SDA_PIN, SCL_PIN);
+    Wire.setClock(400000);
+    mpuSampler.begin(Wire);
 
     // Initialize DS18B20 (optional)
 #if TILTED_ENABLE_DS18B20
@@ -399,14 +374,14 @@ void setup()
 	resetInfo = ESP.getResetInfoPtr();
 	if (resetInfo->reason != REASON_DEEP_SLEEP_AWAKE)
 	{
-		int16_t ax, ay, az;
 		float tilt;
 
 		calibrationSetupStart = millis();
 		while ((millis() - calibrationSetupStart) < CALIBRATION_SETUP_TIME)
 		{
-			mpu.getAcceleration(&ax, &az, &ay);
-			tilt = calculateTilt(ax, az, ay);
+            // Sample until we have at least one valid reading to detect calibration posture.
+            mpuSampler.sample();
+            tilt = mpuSampler.filteredTiltDeg();
 			if (tilt > 0.0 && tilt > CALIBRATION_TILT_ANGLE_MIN && tilt < CALIBRATION_TILT_ANGLE_MAX)
 			{
 				Serial.println("Checking for OTA update...");
@@ -432,6 +407,9 @@ void setup()
 	}
 
 	currentState = STATE_SAMPLING;
+    // Ensure we always start a cycle with a fresh sample window.
+    mpuSampler.reset(MAX_SAMPLES);
+    Serial.printf("[SAMPLE_INIT] target=%u left=%u\n", (unsigned)MAX_SAMPLES, (unsigned)mpuSampler.samplesLeft());
 	Serial.println("Finished setup");
 }
 
@@ -445,49 +423,41 @@ void loop()
             else if ((millis() - bootTime) > WAKE_TIMEOUT && !isCalibrationMode()) {
                 currentState = STATE_SLEEPING;
             }
-            else if (nsamples < MAX_SAMPLES && mpu.getIntDataReadyStatus()) {
-                int16_t ax, ay, az;
-                mpu.getAcceleration(&ax, &az, &ay);
+            else if (mpuSampler.pending()) {
+                // In fallback mode (no INT pin), sample() will still make progress.
+                // If dataReady is required/enabled, sample() will return false until ready.
+                mpuSampler.sample();
 
-                float tilt = calculateTilt(ax, az, ay);
-                
-                // Ignore zero readings as well as readings of precisely 90.
-                // Both of these indicate failures to read correct data from the MPU.
-                if (tilt > 0.0 && tilt != 90) {
-                    samples[nsamples++] = tilt;
-                }
-
-                if (nsamples >= MAX_SAMPLES) {
-                    // As soon as we have all our samples, read the temperature.
-                    // This offset is from the MPU documentation. Displays temperature in degrees C.
-                    temperature = mpu.getTemperature() / 340.0 + 36.53;
-
-                    // Read DS18B20 temp (aux) if enabled.
+				if (mpuSampler.ready()) {
+					// Read DS18B20 temp (aux) if enabled.
 #if TILTED_ENABLE_DS18B20
-                    // This can take up to ~750ms at 12-bit; library handles timing.
-                    auxTemperature = NAN;
-                    ds18b20.requestTemperatures();
-                    {
-                        const float t = ds18b20.getTempCByIndex(0);
-                        if (t > -100.0f && t < 150.0f)
-                        {
-                            auxTemperature = t;
-                        }
-                    }
+					// This can take up to ~750ms at 12-bit; library handles timing.
+					auxTemperature = NAN;
+					ds18b20.requestTemperatures();
+					{
+						const float t = ds18b20.getTempCByIndex(0);
+						if (t > -100.0f && t < 150.0f)
+						{
+							auxTemperature = t;
+						}
+					}
 #endif
-                    
-                    // Put the MPU back to sleep immediately after data collection
-                    putMpuToSleep();
-                    
-                    currentState = STATE_PROCESSING;
-                }
+
+					// Put the MPU back to sleep immediately after data collection
+					mpuSampler.sleep();
+					Serial.println("MPU put to sleep");
+
+					currentState = STATE_PROCESSING;
+				}
             }
             
             // mpu.getIntDataReadyStatus() hits the I2C bus. We don't need
 			// to poll every ms while we're gathering samples. Once we have
 			// the samples we're just waiting for the transmit to clear, so
 			// loop a bit quicker.
-            delay((nsamples < MAX_SAMPLES) ? 10 : 1);
+            // Poll slower while we're gathering samples.
+			delay((mpuSampler.samplesLeft() > 0) ? 10 : 1);
+            Serial.println("Looping in SAMPLING state");
             break;
             
         case STATE_PROCESSING:
