@@ -17,6 +17,10 @@
 
 #include "mpu_sampler.h"
 
+#if TILTED_ENABLE_DS18B20
+#include "ds18b20_sampler.h"
+#endif
+
 #include "tilted_protocol.h"
 #include "tilted_sensor_id.h"
 #include "tilted_packet_builder.h"
@@ -90,6 +94,7 @@ static MpuSampler mpuSampler(MAX_SAMPLES);
 #if TILTED_ENABLE_DS18B20
 static OneWire oneWire(ONE_WIRE_PIN);
 static DallasTemperature ds18b20(&oneWire);
+static Ds18b20Sampler ds18b20Sampler(ds18b20);
 #endif
 
 //------------------------------------------------------------
@@ -364,7 +369,7 @@ void setup()
 
     // Initialize DS18B20 (optional)
 #if TILTED_ENABLE_DS18B20
-    ds18b20.begin();
+    ds18b20Sampler.begin();
 #endif
 
 	// Read RTC memory to get current number of calibration iterations.
@@ -410,6 +415,11 @@ void setup()
     // Ensure we always start a cycle with a fresh sample window.
     mpuSampler.reset(MAX_SAMPLES);
     Serial.printf("[SAMPLE_INIT] target=%u left=%u\n", (unsigned)MAX_SAMPLES, (unsigned)mpuSampler.samplesLeft());
+
+#if TILTED_ENABLE_DS18B20
+    // Start DS18B20 conversion alongside MPU sampling.
+    ds18b20Sampler.start();
+#endif
 	Serial.println("Finished setup");
 }
 
@@ -423,32 +433,30 @@ void loop()
             else if ((millis() - bootTime) > WAKE_TIMEOUT && !isCalibrationMode()) {
                 currentState = STATE_SLEEPING;
             }
-            else if (mpuSampler.pending()) {
+            else {
                 // In fallback mode (no INT pin), sample() will still make progress.
                 // If dataReady is required/enabled, sample() will return false until ready.
-                mpuSampler.sample();
+                if (mpuSampler.pending())
+                    mpuSampler.sample();
 
-				if (mpuSampler.ready()) {
-					// Read DS18B20 temp (aux) if enabled.
 #if TILTED_ENABLE_DS18B20
-					// This can take up to ~750ms at 12-bit; library handles timing.
-					auxTemperature = NAN;
-					ds18b20.requestTemperatures();
-					{
-						const float t = ds18b20.getTempCByIndex(0);
-						if (t > -100.0f && t < 150.0f)
-						{
-							auxTemperature = t;
-						}
-					}
+                if (ds18b20Sampler.pending())
+                    ds18b20Sampler.sample();
+                const bool allReady = mpuSampler.ready() && ds18b20Sampler.ready();
+#else
+                const bool allReady = mpuSampler.ready();
 #endif
 
-					// Put the MPU back to sleep immediately after data collection
-					mpuSampler.sleep();
-					Serial.println("MPU put to sleep");
+                if (allReady) {
+#if TILTED_ENABLE_DS18B20
+                    auxTemperature = ds18b20Sampler.temperatureC();
+#endif
+                    // Put the MPU back to sleep immediately after data collection
+                    mpuSampler.sleep();
+                    Serial.println("MPU put to sleep");
 
-					currentState = STATE_PROCESSING;
-				}
+                    currentState = STATE_PROCESSING;
+                }
             }
             
             // mpu.getIntDataReadyStatus() hits the I2C bus. We don't need
@@ -457,7 +465,6 @@ void loop()
 			// loop a bit quicker.
             // Poll slower while we're gathering samples.
 			delay((mpuSampler.samplesLeft() > 0) ? 10 : 1);
-            Serial.println("Looping in SAMPLING state");
             break;
             
         case STATE_PROCESSING:
