@@ -68,14 +68,13 @@
     const ctx = chartElement.getContext("2d");
     if (!ctx) return;
 
-    const labels = dataPoints.map((dp) => formatTimestamp(dp.timestamp));
-    const gravityData = dataPoints.map((dp) => dp.gravity);
-    const tempData = dataPoints.map((dp) => dp.temp);
+  // Use numeric x values so spacing is proportional to timestamps
+  const gravityData = dataPoints.map((dp) => ({ x: dp.timestamp, y: dp.gravity }));
+  const tempData = dataPoints.map((dp) => ({ x: dp.timestamp, y: dp.temp }));
 
     chart = new chartLibrary.Chart(ctx, {
       type: "line",
       data: {
-        labels: labels,
         datasets: [
           {
             label: "Gravity",
@@ -83,6 +82,8 @@
             tension: 0.2,
             pointRadius: 3,
             yAxisID: "y",
+            borderColor: '#1f77b4',
+            backgroundColor: '#1f77b4'
           },
           {
             label: "Temperature",
@@ -90,6 +91,8 @@
             tension: 0.2,
             pointRadius: 3,
             yAxisID: "y1",
+            borderColor: '#ff7f0e',
+            backgroundColor: '#ff7f0e'
           },
         ],
       },
@@ -107,14 +110,17 @@
           tooltip: {
             callbacks: {
               title: function (context: any) {
-                return labels[context[0].dataIndex];
+                // Use the x value (timestamp) from the first item
+                const item = context[0];
+                const ts = item && item.parsed && item.parsed.x ? item.parsed.x : null;
+                return ts ? new Date(Number(ts)).toLocaleString() : '';
               },
               afterLabel: function (context: any) {
                 const dataIndex = context.dataIndex;
                 const dataPoint = dataPoints[dataIndex];
 
                 // Only add the battery and tilt info once (not for each dataset)
-                if (context.datasetIndex === 0) {
+                if (context.datasetIndex === 0 && dataPoint) {
                   return [
                     `Battery: ${dataPoint.volt.toFixed(2)}V`,
                     `Tilt: ${dataPoint.tilt.toFixed(1)}°`,
@@ -158,10 +164,20 @@
             },
           },
           x: {
+            type: 'linear',
+            title: {
+              display: true,
+              text: 'Time'
+            },
             ticks: {
               maxRotation: 45,
               minRotation: 45,
-            },
+              callback: function(value: any) {
+                // value is the numeric timestamp
+                if (!value) return '';
+                return new Date(Number(value)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+              }
+            }
           },
         },
       },
