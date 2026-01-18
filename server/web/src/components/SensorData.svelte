@@ -5,6 +5,30 @@
     $: latestData = $sensorData && $sensorData.dataPoints.length > 0 
       ? $sensorData.dataPoints[$sensorData.dataPoints.length - 1] 
       : null;
+
+    // Compute averages for the selected period
+    let avgTemp: number | null = null;
+    let avgTilt: number | null = null;
+  $: if ($sensorData && $sensorData.dataPoints.length > 0) {
+      const points = $sensorData.dataPoints;
+      let sumT = 0;
+      let sumTilt = 0;
+      let count = 0;
+      for (let p of points) {
+        // guard against missing values
+        if (typeof p.temp === 'number' && !isNaN(p.temp)) {
+          sumT += p.temp;
+        }
+        if (typeof p.tilt === 'number' && !isNaN(p.tilt)) {
+          sumTilt += p.tilt;
+        }
+        count += 1;
+      }
+      if (count > 0) {
+        avgTemp = sumT / count;
+        avgTilt = sumTilt / count;
+      }
+    }
   </script>
   
   <div class="bg-white p-4 rounded-lg shadow-md">
@@ -22,12 +46,18 @@
         <div class="p-3 bg-red-50 rounded-lg border border-red-100">
           <div class="text-sm text-red-700 font-medium">Temperature</div>
           <div class="text-2xl font-bold">{latestData.temp.toFixed(1)}°</div>
+          {#if avgTemp !== null}
+            <div class="text-xs text-red-600 mt-1">avg: {avgTemp.toFixed(1)}°</div>
+          {/if}
         </div>
         
         <!-- Tilt Card -->
         <div class="p-3 bg-green-50 rounded-lg border border-green-100">
           <div class="text-sm text-green-700 font-medium">Tilt</div>
           <div class="text-2xl font-bold">{latestData.tilt.toFixed(1)}°</div>
+          {#if avgTilt !== null}
+            <div class="text-xs text-green-600 mt-1">avg: {avgTilt.toFixed(1)}°</div>
+          {/if}
         </div>
         
         <!-- Voltage Card -->
