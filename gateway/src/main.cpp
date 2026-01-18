@@ -80,13 +80,28 @@ void publishBrewfather()
     Serial.println("");
 
     HTTPClient http;
-    // For TLS we must configure the secure client. Use insecure mode when no
-    // CA fingerprint or root cert is provided (acceptable for LAN/private use).
-    wifiClient.setInsecure();
-    http.begin(wifiClient, brewfatherURL.c_str());
+    int httpCode = -1;
+    String resp;
+
+    // Choose secure or insecure client based on URL scheme
+    String urlLower = brewfatherURL;
+    urlLower.toLowerCase();
+    if (urlLower.startsWith("https://")) {
+        // HTTPS: use WiFiClientSecure
+        wifiClient.setInsecure(); // skip cert validation if no CA available
+        http.begin(wifiClient, brewfatherURL.c_str());
+    } else if (urlLower.startsWith("http://")) {
+        // Plain HTTP: use default (non-secure) begin
+        http.begin(brewfatherURL.c_str());
+    } else {
+        // No scheme: assume HTTPS
+        wifiClient.setInsecure();
+        http.begin(wifiClient, brewfatherURL.c_str());
+    }
+
     http.addHeader("Content-Type", "application/json");
-    int httpCode = http.POST(jsonBody);
-    String resp = http.getString();
+    httpCode = http.POST(jsonBody);
+    resp = http.getString();
     Serial.printf("Brewfather POST returned code=%d body=%s\n", httpCode, resp.c_str());
     http.end();
 }

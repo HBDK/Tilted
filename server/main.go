@@ -93,6 +93,9 @@ func main() {
 	e.GET("/api/settings/brewfather", getBrewfatherSetting)
 	e.POST("/api/settings/brewfather", setBrewfatherSetting)
 
+	// Debug: forward arbitrary JSON to the effective Brewfather URL and return upstream response
+	e.POST("/api/debug/forward", debugForwardHandler)
+
 	// Serve Svelte frontend for all other routes
 	e.GET("/*", echo.WrapHandler(web.FrontEndHandler))
 
@@ -617,11 +620,29 @@ func handleGatewayJson(c echo.Context) error {
 // Brewfather-forward URL. It's intentionally simple: one attempt, logged on
 // failure. Caller should run this in a goroutine if they don't want blocking.
 func forwardToBrewfather(data *SensorReading) error {
-	// Reuse the incoming JSON shape for forwarding unless the target
-	// requires a different payload. This keeps the gateway side simple
-	// — you can point the gateway's Brewfather URL at this server and it
-	// will be proxied onward as configured here.
-	b, err := json.Marshal(data)
+	// Build Brewfather-compatible payload according to their streaming API
+	// See: POST http://log.brewfather.net/stream?id=:logging-id
+	payload := map[string]any{
+		"name":           data.Reading.SensorID,
+		"device_integration": "default",
+		"device_source":  "Tilted",
+		"report_source":  "TiltedServer",
+	}
+	// Add optional fields when present
+	if data.Reading.Temp != 0 {
+		payload["temp"] = data.Reading.Temp
+	}
+	if data.Reading.Gravity != 0 {
+		payload["gravity"] = data.Reading.Gravity
+	}
+	if data.Reading.Volt != 0 {
+		payload["battery"] = data.Reading.Volt
+	}
+	if data.Reading.Tilt != 0 {
+		payload["angle"] = data.Reading.Tilt
+	}
+
+	b, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
@@ -657,6 +678,45 @@ func forwardToBrewfather(data *SensorReading) error {
 	// Optionally log successful forwards at debug level
 	log.Printf("Forwarded to %s, status=%s", req.URL.String(), resp.Status)
 	return nil
+}
+
+// debugForwardHandler forwards arbitrary JSON to the effective Brewfather URL
+// and returns the upstream response body and status for debugging purposes.
+func debugForwardHandler(c echo.Context) error {
+	// Read raw body
+	bodyBytes, err := io.ReadAll(c.Request().Body)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "failed to read request body"})
+	}
+
+	url, err := getEffectiveBrewfatherURL()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to resolve forward URL"})
+	}
+	if url == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "no forward URL configured"})
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to create upstream request"})
+	}
+	req.Header.Set("Content-Type", c.Request().Header.Get("Content-Type"))
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return c.JSON(http.StatusBadGateway, map[string]string{"error": fmt.Sprintf("upstream error: %v", err)})
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+
+	return c.JSON(http.StatusOK, map[string]any{
+		"upstream_status": resp.Status,
+		"upstream_code":   resp.StatusCode,
+		"upstream_body":   string(respBody),
+	})
 }
 
 // getEffectiveBrewfatherURL returns the stored override if present, otherwise the env default.
