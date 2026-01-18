@@ -5,7 +5,11 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"os"
+	"bytes"
+	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -53,6 +57,7 @@ type SensorData struct {
 
 // Global database connection pool
 var dbPool *sqlitex.Pool
+var brewfatherForwardURL string
 
 func main() {
 	// Initialize SQLite database
@@ -73,6 +78,11 @@ func main() {
 
 	// Routes
 	e.POST("/api/readings", handleSensorData)
+	// Accept raw gateway JSON produced by the ESP32 gateway (the
+	// JSON produced by EspNowReceiver::takePendingJson()). This makes it
+	// trivial to point the gateway's Brewfather URL at this server so the
+	// server can persist and optionally forward readings.
+	e.POST("/api/publish", handleGatewayJson)
 	e.GET("/api/sensors", getSensorIDs)
 	e.GET("/api/readings/:sensorId", getSensorData)
 	e.GET("/health", healthCheck)
@@ -82,6 +92,13 @@ func main() {
 
 	// Start server
 	port := ":8080"
+
+	// Optional: forward incoming readings to a Brewfather-compatible endpoint.
+	// Set environment variable BREWFATHER_FORWARD_URL to enable.
+	brewfatherForwardURL = os.Getenv("BREWFATHER_FORWARD_URL")
+	if brewfatherForwardURL != "" {
+		log.Printf("Brewfather forward enabled -> %s", brewfatherForwardURL)
+	}
 	log.Printf("Starting server on port %s", port)
 	if err := e.Start(port); err != http.ErrServerClosed {
 		log.Fatal(err)
@@ -93,7 +110,26 @@ func initDB() (*sqlitex.Pool, error) {
 	databaseLocation := flag.String("database", "tilted.db", "")
 	flag.Parse()
 
-	pool, err := sqlitex.NewPool(*databaseLocation, sqlitex.PoolOptions{})
+	// Ensure parent directory exists and the database file is present so
+	// sqlite can open it. Some environments (containers, fresh deploys)
+	// may not have created the file yet; proactively create it.
+	dbPath := *databaseLocation
+	dbDir := filepath.Dir(dbPath)
+	if dbDir != "." && dbDir != "" {
+		if err := os.MkdirAll(dbDir, 0755); err != nil {
+			return nil, fmt.Errorf("failed to create database directory: %v", err)
+		}
+	}
+
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		f, err := os.OpenFile(dbPath, os.O_CREATE|os.O_EXCL, 0644)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create database file: %v", err)
+		}
+		f.Close()
+	}
+
+	pool, err := sqlitex.NewPool(dbPath, sqlitex.PoolOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %v", err)
 	}
@@ -176,6 +212,15 @@ func handleSensorData(c echo.Context) error {
 			"status": "error",
 			"error":  "Failed to store metrics",
 		})
+	}
+
+	// Optionally forward the reading to Brewfather (or any HTTP endpoint)
+	if brewfatherForwardURL != "" {
+		go func(sd *SensorReading) {
+			if err := forwardToBrewfather(sd); err != nil {
+				log.Printf("Failed to forward to Brewfather: %v", err)
+			}
+		}(sensorData)
 	}
 
 	return c.JSON(http.StatusOK, map[string]string{
@@ -473,4 +518,110 @@ func getSensorData(c echo.Context) error {
 	// For now, if no data points, these might remain empty in the response.
 
 	return c.JSON(http.StatusOK, sensorDataResult)
+}
+
+// handleGatewayJson accepts the lightweight JSON produced by the ESP32
+// gateway (EspNowReceiver::takePendingJson) and maps it into the server's
+// SensorReading type so it can be stored/forwarded in the same pipeline.
+func handleGatewayJson(c echo.Context) error {
+	var payload map[string]any
+	if err := c.Bind(&payload); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid gateway payload"})
+	}
+
+	// Map fields with best-effort conversions.
+	reading := Reading{}
+	if v, ok := payload["gravity"]; ok {
+		if f, ok2 := v.(float64); ok2 {
+			reading.Gravity = f
+		}
+	}
+	if v, ok := payload["angle"]; ok {
+		if f, ok2 := v.(float64); ok2 {
+			reading.Tilt = f
+		}
+	}
+	if v, ok := payload["temp"]; ok {
+		if f, ok2 := v.(float64); ok2 {
+			reading.Temp = f
+		}
+	}
+	if v, ok := payload["battery"]; ok {
+		if f, ok2 := v.(float64); ok2 {
+			// Gateway sends battery as volts (float)
+			reading.Volt = f
+		}
+	}
+	if v, ok := payload["interval"]; ok {
+		if fi, ok2 := v.(float64); ok2 {
+			reading.Interval = int(fi)
+		}
+	}
+
+	sensorId := "unknown"
+	if v, ok := payload["name"]; ok {
+		if s, ok2 := v.(string); ok2 && s != "" {
+			sensorId = s
+		}
+	}
+
+	// Use remote address as a fallback gateway identifier
+	gatewayID := c.Request().RemoteAddr
+	gatewayName := gatewayID
+
+	sr := &SensorReading{
+		Reading:     reading,
+		GatewayID:   gatewayID,
+		GatewayName: gatewayName,
+	}
+	// Use sensorID as the reading.SensorID
+	sr.Reading.SensorID = sensorId
+
+	// Save and optionally forward using existing logic
+	if err := saveToDatabase(sr); err != nil {
+		log.Printf("Error saving gateway payload: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"status": "error", "error": "Failed to store metrics"})
+	}
+
+	if brewfatherForwardURL != "" {
+		go func(sd *SensorReading) {
+			if err := forwardToBrewfather(sd); err != nil {
+				log.Printf("Failed to forward to Brewfather: %v", err)
+			}
+		}(sr)
+	}
+
+	return c.JSON(http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// forwardToBrewfather sends the incoming sensor reading JSON to the configured
+// Brewfather-forward URL. It's intentionally simple: one attempt, logged on
+// failure. Caller should run this in a goroutine if they don't want blocking.
+func forwardToBrewfather(data *SensorReading) error {
+	// Reuse the incoming JSON shape for forwarding unless the target
+	// requires a different payload. This keeps the gateway side simple
+	// — you can point the gateway's Brewfather URL at this server and it
+	// will be proxied onward as configured here.
+	b, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", brewfatherForwardURL, bytes.NewReader(b))
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("http post: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("unexpected status: %s", resp.Status)
+	}
+	return nil
 }

@@ -1,0 +1,31 @@
+version: "3.8"
+
+services:
+  tilted-server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Copenhagen
+      # Optionally set BREWFATHER_FORWARD_URL in the environment or use docker-compose override files.
+      # - BREWFATHER_FORWARD_URL=https://api.brewfather.net/your/endpoint
+    volumes:
+      # Persist the sqlite database and optionally other server-managed state
+      - ./server/data:/data
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=private_proxy"
+      - "traefik.http.routers.tilted.rule=Host(`tilted.snp.hbho.me`)"
+      - "traefik.http.routers.tilted.entrypoints=websecure"
+      - "traefik.http.routers.tilted.tls.certresolver=myresolver"
+      - "traefik.http.services.tilted.loadbalancer.server.port=8080"
+    networks:
+      - proxy
+      - net
+
+networks:
+  net:
+  proxy:
+    external: true
+    name: private_proxy
