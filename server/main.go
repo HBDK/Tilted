@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"bytes"
+	"io"
 	"encoding/json"
 	"net/http"
 	"path/filepath"
@@ -646,9 +647,15 @@ func forwardToBrewfather(data *SensorReading) error {
 	}
 	defer resp.Body.Close()
 
+	// Read response body for improved diagnostics
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyStr := string(bodyBytes)
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("unexpected status: %s", resp.Status)
+		return fmt.Errorf("unexpected status: %s, body: %s", resp.Status, bodyStr)
 	}
+	// Optionally log successful forwards at debug level
+	log.Printf("Forwarded to %s, status=%s", req.URL.String(), resp.Status)
 	return nil
 }
 
