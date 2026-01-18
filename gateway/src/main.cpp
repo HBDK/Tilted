@@ -1,6 +1,7 @@
 #include "WiFi.h"
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <Preferences.h>
 #include <SPI.h>
 #include <CircularBuffer.h>
@@ -32,7 +33,8 @@ bool configMode = false;
 // GPIO13 is currently unused by this firmware and not part of the display SPI pins (18/19/5/16/23/4).
 static constexpr int CONFIG_MODE_PIN = 13;
 
-WiFiClient wifiClient;
+// Use a secure WiFi client for HTTPS requests so SNI/TLS works correctly.
+WiFiClientSecure wifiClient;
 
 EspNowReceiver espNow;
 
@@ -78,9 +80,14 @@ void publishBrewfather()
     Serial.println("");
 
     HTTPClient http;
+    // For TLS we must configure the secure client. Use insecure mode when no
+    // CA fingerprint or root cert is provided (acceptable for LAN/private use).
+    wifiClient.setInsecure();
     http.begin(wifiClient, brewfatherURL.c_str());
     http.addHeader("Content-Type", "application/json");
-    http.POST(jsonBody);
+    int httpCode = http.POST(jsonBody);
+    String resp = http.getString();
+    Serial.printf("Brewfather POST returned code=%d body=%s\n", httpCode, resp.c_str());
     http.end();
 }
 
