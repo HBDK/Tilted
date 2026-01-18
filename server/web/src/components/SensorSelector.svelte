@@ -43,6 +43,22 @@
         // Prefer sensor query parameter if present and valid.
         const params = new URLSearchParams(window.location.search);
         const sensorParam = params.get('sensor');
+        const startParam = params.get('start-time');
+        // If a start-time query param is present, try to apply it (ms since epoch expected)
+        if (startParam) {
+          const parsed = parseInt(startParam, 10);
+          if (!isNaN(parsed) && parsed > 0 && parsed < Date.now()) {
+            // set startTime and ensure endTime is now
+            selectedDateRange.update(curr => ({ ...curr, startTime: parsed, endTime: Date.now() }));
+            // sync local input string
+            startTimeStr = toDateTimeLocalString(parsed);
+            endTimeStr = toDateTimeLocalString(Date.now());
+          } else {
+            // invalid start param, remove it
+            params.delete('start-time');
+          }
+        }
+
         if (sensorParam && localSensorIds.includes(sensorParam)) {
           selectedSensorId.set(sensorParam);
           // update URL to ensure normalized form
@@ -91,8 +107,17 @@
   function handleStartTimeChange(event: Event) {
     const target = event.target as HTMLInputElement;
     const newStartTime = fromDateTimeLocalString(target.value);
-    if ($selectedDateRange && newStartTime < $selectedDateRange.endTime) {
-      selectedDateRange.update(current => ({ ...current, startTime: newStartTime }));
+    const now = Date.now();
+    if ($selectedDateRange && newStartTime < now) {
+      // Keep endTime anchored to now per request
+      selectedDateRange.update(current => ({ ...current, startTime: newStartTime, endTime: now }));
+      // update endTime input to show now
+      endTimeStr = toDateTimeLocalString(now);
+      // update query param
+      const params = new URLSearchParams(window.location.search);
+      params.set('start-time', String(newStartTime));
+      const newUrl = `${window.location.pathname}?${params.toString()}`;
+      history.replaceState(null, '', newUrl);
     } else {
       alert("Start time cannot be after end time. Reverting.");
       // Revert input value to current store value
@@ -100,17 +125,7 @@
     }
   }
 
-  function handleEndTimeChange(event: Event) {
-    const target = event.target as HTMLInputElement;
-    const newEndTime = fromDateTimeLocalString(target.value);
-     if ($selectedDateRange && newEndTime > $selectedDateRange.startTime) {
-      selectedDateRange.update(current => ({ ...current, endTime: newEndTime }));
-    } else {
-      alert("End time cannot be before start time. Reverting.");
-      // Revert input value to current store value
-      if ($selectedDateRange) endTimeStr = toDateTimeLocalString($selectedDateRange.endTime);
-    }
-  }
+  // End time is anchored to now per UX decision; do not allow user edits here.
 </script>
 
 <div class="bg-white p-4 rounded-lg shadow-md">
@@ -159,10 +174,10 @@
       <input 
         type="datetime-local"
         id="end-time"
-        class="w-full p-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
+        class="w-full p-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500 bg-gray-100"
         bind:value={endTimeStr}
-        on:input={handleEndTimeChange}
         disabled={!$selectedSensorId}
+        readonly
       />
     </div>
   </div>

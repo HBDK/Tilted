@@ -8,8 +8,9 @@
     import SensorDataDetail from './components/SensorData.svelte'; // Renamed import variable for clarity
       
     // Load data when sensor ID or date range changes
-    $: if ($selectedSensorId && $selectedDateRange.startTime && $selectedDateRange.endTime) {
-      loadSensorData($selectedSensorId, $selectedDateRange.startTime, $selectedDateRange.endTime);
+    $: if ($selectedSensorId && $selectedDateRange.startTime) {
+      // Use 'now' as the end time for queries to keep end anchored to the current time
+      loadSensorData($selectedSensorId, $selectedDateRange.startTime, Date.now());
     } else if (!$selectedSensorId) {
       // If sensor becomes unselected, clear data
       sensorData.set(null);
