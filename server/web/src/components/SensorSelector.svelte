@@ -40,9 +40,23 @@
       localSensorIds = fetchedSensorIds; // Update local reactive variable
 
       if (localSensorIds.length > 0) {
-        // If no sensor is currently selected, or if the selected one is not in the new list, select the first one.
-        if (!$selectedSensorId || !localSensorIds.includes($selectedSensorId)) { 
-          selectedSensorId.set(localSensorIds[0]);
+        // Prefer sensor query parameter if present and valid.
+        const params = new URLSearchParams(window.location.search);
+        const sensorParam = params.get('sensor');
+        if (sensorParam && localSensorIds.includes(sensorParam)) {
+          selectedSensorId.set(sensorParam);
+          // update URL to ensure normalized form
+          params.set('sensor', sensorParam);
+          const newUrl = `${window.location.pathname}?${params.toString()}`;
+          history.replaceState(null, '', newUrl);
+        } else {
+          // If no sensor is currently selected, or if the selected one is not in the new list, select the first one.
+          if (!$selectedSensorId || !localSensorIds.includes($selectedSensorId)) {
+            selectedSensorId.set(localSensorIds[0]);
+            params.set('sensor', localSensorIds[0]);
+            const newUrl = `${window.location.pathname}?${params.toString()}`;
+            history.replaceState(null, '', newUrl);
+          }
         }
       } else {
         selectedSensorId.set(null); // No sensors available
@@ -61,7 +75,17 @@
 
   function handleSensorChange(event: Event) {
     const target = event.target as HTMLSelectElement;
-    selectedSensorId.set(target.value || null); // Ensure null if empty value
+    const newVal = target.value || null;
+    selectedSensorId.set(newVal);
+    // Update query parameter so selection survives reloads / shares.
+    const params = new URLSearchParams(window.location.search);
+    if (newVal) {
+      params.set('sensor', newVal);
+    } else {
+      params.delete('sensor');
+    }
+    const newUrl = `${window.location.pathname}?${params.toString()}`;
+    history.replaceState(null, '', newUrl);
   }
 
   function handleStartTimeChange(event: Event) {
