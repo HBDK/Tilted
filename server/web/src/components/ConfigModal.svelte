@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createEventDispatcher, onMount } from 'svelte';
-  import { brewfatherUrl, setBrewfatherUrl } from '../lib/stores';
+  import { brewfatherUrl, loadBrewfatherUrl, setBrewfatherUrl } from '../lib/stores';
   import { get } from 'svelte/store';
 
   export let open: boolean;
@@ -9,23 +9,27 @@
   let draftUrl: string = '';
 
   onMount(() => {
-    const current = get(brewfatherUrl);
-    draftUrl = current ?? '';
+    // Ensure store is loaded from server then populate draft
+    (async () => {
+      await loadBrewfatherUrl();
+      const current = get(brewfatherUrl);
+      draftUrl = current ?? '';
+    })();
   });
 
   function close() {
     dispatch('close');
   }
 
-  function save() {
+  async function save() {
     const trimmed = draftUrl.trim();
-    setBrewfatherUrl(trimmed.length ? trimmed : null);
+    await setBrewfatherUrl(trimmed.length ? trimmed : null);
     close();
   }
 
-  function resetOverride() {
+  async function resetOverride() {
     draftUrl = '';
-    setBrewfatherUrl(null);
+    await setBrewfatherUrl(null);
     close();
   }
 </script>
@@ -42,7 +46,7 @@
         placeholder="https://tilted.example.com/api/publish"
         bind:value={draftUrl}
       />
-      <div class="text-xs text-gray-500 mb-4">If set, the app will store this URL in localStorage and use it as the Brewfather forwarding endpoint for convenience (client-side override only).</div>
+  <div class="text-xs text-gray-500 mb-4">If set, the server will store this override and it will be used in place of the server's BREWFATHER_FORWARD_URL environment variable.</div>
 
       <div class="flex justify-end gap-2">
         <button class="px-3 py-2 rounded bg-gray-100 border" on:click={resetOverride}>Reset</button>

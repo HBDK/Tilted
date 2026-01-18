@@ -57,7 +57,8 @@ type SensorData struct {
 
 // Global database connection pool
 var dbPool *sqlitex.Pool
-var brewfatherForwardURL string
+// envBrewfatherURL is the default forwarding URL set via environment variable
+var envBrewfatherURL string
 
 func main() {
 	// Initialize SQLite database
@@ -87,18 +88,25 @@ func main() {
 	e.GET("/api/readings/:sensorId", getSensorData)
 	e.GET("/health", healthCheck)
 
+	// Settings endpoints for Brewfather forwarding override
+	e.GET("/api/settings/brewfather", getBrewfatherSetting)
+	e.POST("/api/settings/brewfather", setBrewfatherSetting)
+
 	// Serve Svelte frontend for all other routes
 	e.GET("/*", echo.WrapHandler(web.FrontEndHandler))
 
 	// Start server
 	port := ":8080"
 
-	// Optional: forward incoming readings to a Brewfather-compatible endpoint.
-	// Set environment variable BREWFATHER_FORWARD_URL to enable.
-	brewfatherForwardURL = os.Getenv("BREWFATHER_FORWARD_URL")
-	if brewfatherForwardURL != "" {
-		log.Printf("Brewfather forward enabled -> %s", brewfatherForwardURL)
+	// Optional: forward incoming readings to a Brewfather-compatible endpoint by default.
+	// Set environment variable BREWFATHER_FORWARD_URL to provide a default URL.
+	envBrewfatherURL = os.Getenv("BREWFATHER_FORWARD_URL")
+	if envBrewfatherURL != "" {
+		log.Printf("Brewfather forward default -> %s", envBrewfatherURL)
 	}
+
+	// No in-memory override; we will query the DB for overrides at runtime.
+
 	log.Printf("Starting server on port %s", port)
 	if err := e.Start(port); err != http.ErrServerClosed {
 		log.Fatal(err)
@@ -173,6 +181,12 @@ func initDB() (*sqlitex.Pool, error) {
     
     -- Create index for querying by sensor_id
     CREATE INDEX IF NOT EXISTS idx_readings_sensor_id ON readings(sensor_id);
+    
+	-- Settings table for key/value server-side overrides
+	CREATE TABLE IF NOT EXISTS settings (
+		key TEXT PRIMARY KEY,
+		value TEXT
+	);
     `
 
 	err = sqlitex.ExecuteScript(conn, createTablesSQL, nil)
@@ -215,7 +229,9 @@ func handleSensorData(c echo.Context) error {
 	}
 
 	// Optionally forward the reading to Brewfather (or any HTTP endpoint)
-	if brewfatherForwardURL != "" {
+	if url, err := getEffectiveBrewfatherURL(); err != nil {
+		log.Printf("Failed to determine brewfather URL: %v", err)
+	} else if url != "" {
 		go func(sd *SensorReading) {
 			if err := forwardToBrewfather(sd); err != nil {
 				log.Printf("Failed to forward to Brewfather: %v", err)
@@ -583,7 +599,9 @@ func handleGatewayJson(c echo.Context) error {
 		return c.JSON(http.StatusInternalServerError, map[string]string{"status": "error", "error": "Failed to store metrics"})
 	}
 
-	if brewfatherForwardURL != "" {
+	if url, err := getEffectiveBrewfatherURL(); err != nil {
+		log.Printf("Failed to determine brewfather URL: %v", err)
+	} else if url != "" {
 		go func(sd *SensorReading) {
 			if err := forwardToBrewfather(sd); err != nil {
 				log.Printf("Failed to forward to Brewfather: %v", err)
@@ -607,7 +625,15 @@ func forwardToBrewfather(data *SensorReading) error {
 		return fmt.Errorf("marshal: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", brewfatherForwardURL, bytes.NewReader(b))
+	url, err := getEffectiveBrewfatherURL()
+	if err != nil {
+		return fmt.Errorf("resolve brewfather URL: %w", err)
+	}
+	if url == "" {
+		return fmt.Errorf("no brewfather forwarding URL configured")
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewReader(b))
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
@@ -624,4 +650,120 @@ func forwardToBrewfather(data *SensorReading) error {
 		return fmt.Errorf("unexpected status: %s", resp.Status)
 	}
 	return nil
+}
+
+// getEffectiveBrewfatherURL returns the stored override if present, otherwise the env default.
+// getEffectiveBrewfatherURL returns the stored override if present in DB, otherwise the env default.
+func getEffectiveBrewfatherURL() (string, error) {
+	conn, err := dbPool.Take(context.Background())
+	if err != nil {
+		return "", err
+	}
+	defer dbPool.Put(conn)
+
+	var value string
+	found := false
+	err = sqlitex.Execute(conn, "SELECT value FROM settings WHERE key = ?", &sqlitex.ExecOptions{
+		Args: []any{"brewfather_url"},
+		ResultFunc: func(stmt *sqlite.Stmt) error {
+			value = stmt.ColumnText(0)
+			found = true
+			return nil
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+
+	if found && value != "" {
+		return value, nil
+	}
+	return envBrewfatherURL, nil
+}
+
+// getBrewfatherSetting returns the stored override and effective URL
+func getBrewfatherSetting(c echo.Context) error {
+	// Read stored value from DB
+	conn, err := dbPool.Take(context.Background())
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database unavailable"})
+	}
+	defer dbPool.Put(conn)
+
+	var value string
+	found := false
+	err = sqlitex.Execute(conn, "SELECT value FROM settings WHERE key = ?", &sqlitex.ExecOptions{
+		Args: []any{"brewfather_url"},
+		ResultFunc: func(stmt *sqlite.Stmt) error {
+			value = stmt.ColumnText(0)
+			found = true
+			return nil
+		},
+	})
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to read setting"})
+	}
+
+	var stored *string
+	if found && value != "" {
+		v := value
+		stored = &v
+	}
+
+	effective, err := getEffectiveBrewfatherURL()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to resolve effective URL"})
+	}
+	var effPtr *string
+	if effective != "" {
+		p := effective
+		effPtr = &p
+	}
+	return c.JSON(http.StatusOK, map[string]any{"stored": stored, "effective": effPtr})
+}
+
+// setBrewfatherSetting accepts {"url": <string|null>} and persists it.
+func setBrewfatherSetting(c echo.Context) error {
+	var body struct {
+		URL *string `json:"url"`
+	}
+	if err := c.Bind(&body); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid payload"})
+	}
+
+	conn, err := dbPool.Take(context.Background())
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "database unavailable"})
+	}
+	defer dbPool.Put(conn)
+
+	if body.URL == nil || *body.URL == "" {
+		// Delete stored override if present
+		if err := sqlitex.Execute(conn, "DELETE FROM settings WHERE key = ?", &sqlitex.ExecOptions{Args: []any{"brewfather_url"}}); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to clear setting"})
+		}
+	} else {
+		// Upsert the override
+		if err := sqlitex.Execute(conn, "INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)", &sqlitex.ExecOptions{Args: []any{"brewfather_url", *body.URL}}); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to save setting"})
+		}
+	}
+
+	// Respond with the new stored and effective URL
+	var stored *string
+	if body.URL != nil && *body.URL != "" {
+		v := *body.URL
+		stored = &v
+	}
+
+	effective, err := getEffectiveBrewfatherURL()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to resolve effective URL"})
+	}
+	var effPtr *string
+	if effective != "" {
+		p := effective
+		effPtr = &p
+	}
+	return c.JSON(http.StatusOK, map[string]any{"stored": stored, "effective": effPtr})
 }

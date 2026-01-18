@@ -13,24 +13,42 @@ export const selectedDateRange = writable<{ startTime: number; endTime: number }
 });
 
 // Brewfather URL override (persisted to localStorage)
-function initialBrewfatherUrl(): string | null {
+// Brewfather URL override (server-backed)
+export const brewfatherUrl = writable<string | null>(null);
+
+// Load the stored brewfather override from the server
+export async function loadBrewfatherUrl(): Promise<void> {
   try {
-    const v = localStorage.getItem('brewfatherUrl');
-    return v && v.length > 0 ? v : null;
+    const res = await fetch('/api/settings/brewfather');
+    if (!res.ok) {
+      console.error('Failed to load brewfather setting', res.status);
+      return;
+    }
+    const body = await res.json();
+    // body.stored may be null or a string
+    if (body && Object.prototype.hasOwnProperty.call(body, 'stored')) {
+      brewfatherUrl.set(body.stored ?? null);
+    }
   } catch (e) {
-    // localStorage may be unavailable in some environments
-    return null;
+    console.error('Error loading brewfather setting', e);
   }
 }
 
-export const brewfatherUrl = writable<string | null>(initialBrewfatherUrl());
-
-export function setBrewfatherUrl(url: string | null) {
+// Save the brewfather override to the server (url may be null to clear)
+export async function setBrewfatherUrl(url: string | null): Promise<void> {
   try {
-    if (url) localStorage.setItem('brewfatherUrl', url);
-    else localStorage.removeItem('brewfatherUrl');
+    const res = await fetch('/api/settings/brewfather', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    if (!res.ok) {
+      console.error('Failed to save brewfather setting', res.status);
+      return;
+    }
+    const body = await res.json();
+    brewfatherUrl.set(body.stored ?? null);
   } catch (e) {
-    // ignore storage errors
+    console.error('Error saving brewfather setting', e);
   }
-  brewfatherUrl.set(url);
 }
