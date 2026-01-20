@@ -20,6 +20,9 @@
 #if TILTED_ENABLE_DS18B20
 #include "ds18b20_sampler.h"
 #endif
+#if defined(TILTED_ENABLE_BMP280)
+#include "bmp280_sampler.h"
+#endif
 
 #include "tilted_protocol.h"
 #include "tilted_sensor_id.h"
@@ -97,6 +100,10 @@ static DallasTemperature ds18b20(&oneWire);
 static Ds18b20Sampler ds18b20Sampler(ds18b20);
 #endif
 
+#if defined(TILTED_ENABLE_BMP280)
+static Bmp280Sampler bmp280Sampler;
+#endif
+
 //------------------------------------------------------------
 static const int led = LED_BUILTIN;
 
@@ -115,6 +122,10 @@ static void actuallySleep()
     // Put MPU to sleep if not already done
     mpuSampler.sleep();
     Serial.println("MPU put to sleep");
+    // Put BMP280 to sleep if present
+#if defined(TILTED_ENABLE_BMP280)
+    bmp280Sampler.sleep();
+#endif
     
     // Turn off WiFi completely to save power
     WiFi.mode(WIFI_OFF);
@@ -144,12 +155,38 @@ static inline int readVoltage()
     return (voltage = sum / readings);
 }
 
+// Perform a non-invasive I2C bus scan and print addresses. This is run only
+// on a full power-on (not deep-sleep wake) to help with diagnostics.
+static void doI2CScan(TwoWire& wire)
+{
+    Serial.println("I2C scan starting");
+    for (uint8_t addr = 1; addr < 127; addr++) {
+        wire.beginTransmission(addr);
+        uint8_t err = wire.endTransmission();
+        if (err == 0) {
+            Serial.print("Found I2C device at 0x");
+            if (addr < 16) Serial.print('0');
+            Serial.println(addr, HEX);
+        }
+        delay(1);
+    }
+    Serial.println("Scan complete");
+}
+
 // TLV item capacity depends on optional sensors.
 // Base fields: tilt, temp, battery, interval
 #if TILTED_ENABLE_DS18B20
-static constexpr uint8_t TILTED_ITEM_CAPACITY = 5;
+    #if defined(TILTED_ENABLE_BMP280)
+        static constexpr uint8_t TILTED_ITEM_CAPACITY = 6; // DS18B20 + BMP (two aux temps)
+    #else
+        static constexpr uint8_t TILTED_ITEM_CAPACITY = 5; // DS18B20 only
+    #endif
 #else
-static constexpr uint8_t TILTED_ITEM_CAPACITY = 4;
+    #if defined(TILTED_ENABLE_BMP280)
+        static constexpr uint8_t TILTED_ITEM_CAPACITY = 5; // BMP aux temp
+    #else
+        static constexpr uint8_t TILTED_ITEM_CAPACITY = 4; // base
+    #endif
 #endif
 
 static void sendSensorData()
@@ -177,6 +214,14 @@ static void sendSensorData()
     if (isfinite(auxTemperature))
     {
         items[itemCount++] = TiltedValueHelper::auxTempC(auxTemperature);
+    }
+#endif
+    // Optional BMP280 auxiliary temperature only (no environmental pressure)
+#if defined(TILTED_ENABLE_BMP280)
+    float temperature = bmp280Sampler.temperatureC();
+    if (isfinite(temperature))
+    {
+        items[itemCount++] = TiltedValueHelper::auxTempC(temperature);
     }
 #endif
     items[itemCount++] = TiltedValueHelper::batteryMv(voltage);
@@ -345,6 +390,8 @@ void setup()
 	ledOff();
 
 	Serial.begin(74880);
+	rst_info *resetInfo;
+	resetInfo = ESP.getResetInfoPtr();
 	Serial.println("Reboot");
 
 	Serial.print("Booting because ");
@@ -359,6 +406,12 @@ void setup()
 	// INITIALIZE MPU
 	Serial.println("Starting MPU-6050");
     Wire.begin(SDA_PIN, SCL_PIN);
+
+    // Run a non-invasive I2C scan only on power-on (not deep-sleep wake).
+    if (resetInfo->reason != REASON_DEEP_SLEEP_AWAKE) {
+        doI2CScan(Wire);
+    }
+
     Wire.setClock(400000);
     mpuSampler.begin(Wire);
 
@@ -367,12 +420,14 @@ void setup()
     ds18b20Sampler.begin();
 #endif
 
+#if defined(TILTED_ENABLE_BMP280)
+    bmp280Sampler.begin(Wire);
+#endif
 	// Read RTC memory to get current number of calibration iterations.
 	ESP.rtcUserMemoryRead(RTC_ADDRESS, &calibrationIterations, sizeof(calibrationIterations));
 
-	rst_info *resetInfo;
-	resetInfo = ESP.getResetInfoPtr();
-	if (resetInfo->reason != REASON_DEEP_SLEEP_AWAKE)
+
+    if (resetInfo->reason != REASON_DEEP_SLEEP_AWAKE)
 	{
 		float tilt;
 
@@ -406,6 +461,10 @@ void setup()
 		normalMode();
 	}
 
+
+
+
+
 	currentState = STATE_SAMPLING;
     // Ensure we always start a cycle with a fresh sample window.
     mpuSampler.reset(MAX_SAMPLES);
@@ -414,6 +473,10 @@ void setup()
 #if TILTED_ENABLE_DS18B20
     // Start DS18B20 conversion alongside MPU sampling.
     ds18b20Sampler.start();
+#endif
+#if defined(TILTED_ENABLE_BMP280)
+    // BMP280 read is immediate; request a read cycle to be taken during sampling.
+    bmp280Sampler.start();
 #endif
 	Serial.println("Finished setup");
 }
@@ -437,9 +500,21 @@ void loop()
 #if TILTED_ENABLE_DS18B20
                 if (ds18b20Sampler.pending())
                     ds18b20Sampler.sample();
-                const bool nonePending = !mpuSampler.pending() && !ds18b20Sampler.pending();
+                #if defined(TILTED_ENABLE_BMP280)
+                    if (bmp280Sampler.pending())
+                        bmp280Sampler.sample();
+                    const bool nonePending = !mpuSampler.pending() && !ds18b20Sampler.pending() && !bmp280Sampler.pending();
+                #else
+                    const bool nonePending = !mpuSampler.pending() && !ds18b20Sampler.pending();
+                #endif
 #else
-                const bool nonePending = !mpuSampler.pending();
+                #if defined(TILTED_ENABLE_BMP280)
+                        if (bmp280Sampler.pending())
+                            bmp280Sampler.sample();
+                        const bool nonePending = !mpuSampler.pending() && !bmp280Sampler.pending();
+                #else
+                    const bool nonePending = !mpuSampler.pending();
+                #endif
 #endif
 
                 // Move on once everything has finished its work for this cycle.
