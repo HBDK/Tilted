@@ -2,7 +2,7 @@
 
 #if TILTED_ENABLE_DS18B20
 
-Ds18b20Sampler::Ds18b20Sampler(DallasTemperature& sensor) : sensor_(sensor) {}
+Ds18b20Sampler::Ds18b20Sampler(OneWire& oneWire) : oneWire_(oneWire), sensor_(&oneWire) {}
 
 void Ds18b20Sampler::begin()
 {

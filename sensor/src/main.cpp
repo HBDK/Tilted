@@ -96,8 +96,7 @@ static MpuSampler mpuSampler(MAX_SAMPLES);
 
 #if TILTED_ENABLE_DS18B20
 static OneWire oneWire(ONE_WIRE_PIN);
-static DallasTemperature ds18b20(&oneWire);
-static Ds18b20Sampler ds18b20Sampler(ds18b20);
+static Ds18b20Sampler ds18b20Sampler(oneWire);
 #endif
 
 #if defined(TILTED_ENABLE_BMP280)

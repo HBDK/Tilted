@@ -3,7 +3,7 @@
 #include <Arduino.h>
 
 #if TILTED_ENABLE_DS18B20
-
+#include <OneWire.h>
 #include <DallasTemperature.h>
 
 // Simple non-blocking DS18B20 sampler.
@@ -13,7 +13,7 @@
 // - When ready() becomes true, temperatureC() returns the last reading.
 class Ds18b20Sampler {
 public:
-	explicit Ds18b20Sampler(DallasTemperature& sensor);
+	explicit Ds18b20Sampler(OneWire& oneWire);
 
 	void begin();
 
@@ -34,8 +34,10 @@ private:
 		Converting,
 		Ready,
 	};
-
-	DallasTemperature& sensor_;
+	OneWire& oneWire_;
+	// Own the DallasTemperature instance so the sampler manages the bus like
+	// I2C samplers manage their sensor objects.
+	DallasTemperature sensor_;
 	State state_ = State::Idle;
 	uint32_t startMs_ = 0;
 	uint32_t conversionMs_ = 750; // worst-case at 12-bit
