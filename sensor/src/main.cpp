@@ -1,5 +1,4 @@
 #include <ESP8266WiFi.h>
-#include <ESP8266httpUpdate.h>
 #include <espnow.h>
 #include <Wire.h>
 
@@ -13,7 +12,6 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #endif
-#include "credentials.h"
 
 #include "mpu_sampler.h"
 
@@ -65,7 +63,7 @@ ADC_MODE(ADC_VCC);
 #define CALIBRATION_SETUP_TIME 30000
 #define WIFI_TIMEOUT 10000
 
-// Version identifier for OTA.
+// Version identifier (kept for build info).
 const char versionTimestamp[] = "TiltedSensor " __DATE__ " " __TIME__;
 
 // when we booted
@@ -333,55 +331,8 @@ void normalMode()
 	readVoltage();
 }
 
-void wifiConnect()
-{
-    WiFi.forceSleepWake();
-    delay(1);
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
-
-    calibrationWifiStart = millis();
-    while (WiFi.status() != WL_CONNECTED && (millis() - calibrationWifiStart) < WIFI_TIMEOUT)
-    {
-        delay(250);
-        Serial.print(".");
-    }
-
-    Serial.print("\nWiFi connected, IP address: ");
-    Serial.println(WiFi.localIP());
-}
-
-void checkOTAUpdate()
-{
-    // Enable verbose updater output on Serial (helps diagnose resets happening inside update()).
-    ESPhttpUpdate.setLedPin(LED_BUILTIN, LOW);
-    ESPhttpUpdate.rebootOnUpdate(false);
-    Serial.setDebugOutput(true);
-
-	WiFiClient wifiClient;
-	wifiConnect();
-    Serial.printf("[OTA] About to call ESPhttpUpdate.update(%s:%u%s)\n", OTA_SERVER, OTA_PORT, OTA_PATH);
-    Serial.flush();
-
-	t_httpUpdate_return ret = ESPhttpUpdate.update(wifiClient, OTA_SERVER, OTA_PORT, OTA_PATH, versionTimestamp);
-    Serial.printf("[OTA] ESPhttpUpdate.update returned: %d\n", (int)ret);
-	switch (ret)
-	{
-	case HTTP_UPDATE_FAILED:
-        Serial.printf("[OTA] Update failed. Error (%d): %s\n",
-            ESPhttpUpdate.getLastError(),
-            ESPhttpUpdate.getLastErrorString().c_str());
-		break;
-	case HTTP_UPDATE_NO_UPDATES:
-		Serial.println("[OTA] No update available.");
-		break;
-	case HTTP_UPDATE_OK:
-		Serial.println("[OTA] Update ok."); // may not be called since we reboot the ESP
-		break;
-	}
-
-    Serial.flush();
-}
+// OTA update logic temporarily removed. To re-enable OTA, restore
+// the previous implementation which used ESPhttpUpdate.
 
 void setup()
 {
@@ -438,10 +389,7 @@ void setup()
             tilt = mpuSampler.filteredTiltDeg();
 			if (tilt > 0.0 && tilt > CALIBRATION_TILT_ANGLE_MIN && tilt < CALIBRATION_TILT_ANGLE_MAX)
 			{
-				Serial.println("Checking for OTA update...");
-				checkOTAUpdate();
-
-				Serial.println("Initiate calibration mode");
+                Serial.println("Initiate calibration mode");
 				calibrationMode(true);
 
 				break;
