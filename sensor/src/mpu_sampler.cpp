@@ -1,4 +1,5 @@
 #include "mpu_sampler.h"
+#include <RunningMedian.h>
 
 // The upstream MPU6050 library can be constructed with a specific TwoWire instance.
 // We use dynamic allocation here so the sampler can switch buses at runtime and the
@@ -113,38 +114,18 @@ float MpuSampler::filteredTiltDeg() const
 	if (samplesTaken_ == 0)
 		return NAN;
 
-	auto medianSmall = [](const float* data, uint8_t n) -> float {
-		// Copy into a small temp array and insertion-sort.
-		float tmp[kMaxSamples];
-		for (uint8_t i = 0; i < n; i++)
-			tmp[i] = data[i];
-
-		for (uint8_t i = 1; i < n; i++)
-		{
-			float key = tmp[i];
-			int8_t j = i - 1;
-			while (j >= 0 && tmp[j] > key)
-			{
-				tmp[j + 1] = tmp[j];
-				j--;
-			}
-			tmp[j + 1] = key;
-		}
-
-		if (n % 2 == 1)
-			return tmp[n / 2];
-		return 0.5f * (tmp[n / 2 - 1] + tmp[n / 2]);
-	};
-
 	// If we sampled fewer than requested (e.g., timeouts), median still works using the
-	// first samplesTaken_ values, but our existing median helper expects a fixed-size
-	// window. To keep this simple and deterministic, when we don't have all samples
-	// we just return the latest value.
+	// first samplesTaken_ values. To keep this simple and detenministic, when we don't
+	// have all samples we just return the latest value.
 	if (samplesTaken_ < targetSamples_)
 		return samples_[samplesTaken_ - 1];
 
-	// Median of our fixed-size window.
-	return medianSmall(samples_, targetSamples_);
+	// Use RunningMedian library for a clear, tested median implementation.
+	RunningMedian rm(targetSamples_);
+	for (uint8_t i = 0; i < targetSamples_; i++) {
+		rm.add(samples_[i]);
+	}
+	return rm.getMedian();
 }
 
 float MpuSampler::calculateTiltDeg_(float ax, float az, float ay)
