@@ -5,19 +5,15 @@
 // We use dynamic allocation here so the sampler can switch buses at runtime and the
 // object can be constructed after the bus is chosen.
 
-MpuSampler::MpuSampler(uint8_t sampleCount) { reset(sampleCount); }
+MpuSampler::MpuSampler(uint8_t sampleCount) { 
+	runningMedian_ = new RunningMedian(sampleCount);
+	reset(); 
+}
 
-void MpuSampler::reset(uint8_t sampleCount)
+void MpuSampler::reset()
 {
-	targetSamples_ = sampleCount;
-	if (targetSamples_ > kMaxSamples)
-		targetSamples_ = kMaxSamples;
-	samplesTaken_ = 0;
+	runningMedian_->clear();
 	tempC_ = NAN;
-
-	for (uint8_t i = 0; i < kMaxSamples; i++)	{
-		samples_[i] = 0.0f;
-	}
 }
 
 void MpuSampler::begin(TwoWire& wire)
@@ -64,20 +60,10 @@ bool MpuSampler::sample()
 		return false;
 	if (mpu_ == nullptr)
 		return false;
-
-	if (requireDataReady_)
-	{
-		if (!mpu_->getIntDataReadyStatus())
-			return false;
-	}
-	else
-	{
-		// Throttle raw reads a bit so we don't hammer I2C in a tight loop.
-		const uint32_t now = millis();
-		if ((now - lastReadMs_) < 8)
-			return false;
-		lastReadMs_ = now;
-	}
+	if (runningMedian_ == nullptr)
+		return false;
+	if (!mpu_->getIntDataReadyStatus())
+		return false;
 
 	int16_t ax, ay, az;
 	mpu_->getAcceleration(&ax, &az, &ay);
@@ -88,7 +74,7 @@ bool MpuSampler::sample()
 	// Both of these indicate failures to read correct data from the MPU.
 	if (tilt > 0.0f && tilt != 90.0f)
 	{
-		samples_[samplesTaken_++] = tilt;
+		runningMedian_->add(tilt);
 
 		if (isComplete())
 		{
@@ -104,28 +90,45 @@ bool MpuSampler::sample()
 
 bool MpuSampler::dataReady() const
 {
-	if (!initialized_ || isComplete() || mpu_ == nullptr)
+	if (!initialized_ || isComplete() || mpu_ == nullptr || runningMedian_ == nullptr)
 		return false;
 	return mpu_->getIntDataReadyStatus();
 }
 
 float MpuSampler::filteredTiltDeg() const
 {
-	if (samplesTaken_ == 0)
+	if (runningMedian_ == nullptr || runningMedian_->getCount() == 0)
 		return NAN;
 
-	// If we sampled fewer than requested (e.g., timeouts), median still works using the
-	// first samplesTaken_ values. To keep this simple and detenministic, when we don't
-	// have all samples we just return the latest value.
-	if (samplesTaken_ < targetSamples_)
-		return samples_[samplesTaken_ - 1];
+	return runningMedian_->getMedian();
+}
 
-	// Use RunningMedian library for a clear, tested median implementation.
-	RunningMedian rm(targetSamples_);
-	for (uint8_t i = 0; i < targetSamples_; i++) {
-		rm.add(samples_[i]);
-	}
-	return rm.getMedian();
+uint8_t MpuSampler::samplesLeft() const
+{
+	if (runningMedian_ == nullptr)
+		return 0;
+	const uint8_t cnt = static_cast<uint8_t>(runningMedian_->getCount());
+	const uint8_t size = static_cast<uint8_t>(runningMedian_->getSize());
+	return (size > cnt) ? (size - cnt) : 0;
+}
+
+bool MpuSampler::isComplete() const
+{
+	if (runningMedian_ == nullptr)
+		return false;
+	return runningMedian_->getCount() >= runningMedian_->getSize();
+}
+
+bool MpuSampler::pending() const
+{
+	if (runningMedian_ == nullptr)
+		return false;
+	return initialized_ && (runningMedian_->getSize() > 0) && !isComplete();
+}
+
+bool MpuSampler::ready() const
+{
+	return !pending();
 }
 
 float MpuSampler::calculateTiltDeg_(float ax, float az, float ay)

@@ -45,6 +45,7 @@ ADC_MODE(ADC_VCC);
 
 // number of tilt samples to average
 #define MAX_SAMPLES 5
+#define SAMPLE_DELAY_MS 10
 
 // Normal interval should be long enough to stretch out battery life. Since
 // we're using the MPU temp sensor, we're probably going to see slower
@@ -191,6 +192,7 @@ static void sendSensorData()
 
     // Median-filtered tilt over our sample window.
     float filteredValue = mpuSampler.filteredTiltDeg();
+    Serial.printf("Filtered tilt: %.2f degrees\n", filteredValue);
 
     // --- Build TLV readings packet (dynamic fields) ---
     // Items we currently include:
@@ -413,7 +415,7 @@ void setup()
 
 	currentState = STATE_SAMPLING;
     // Ensure we always start a cycle with a fresh sample window.
-    mpuSampler.reset(MAX_SAMPLES);
+    mpuSampler.reset();
     Serial.printf("[SAMPLE_INIT] target=%u left=%u\n", (unsigned)MAX_SAMPLES, (unsigned)mpuSampler.samplesLeft());
 
 #if TILTED_ENABLE_DS18B20
@@ -479,7 +481,7 @@ void loop()
 			// the samples we're just waiting for the transmit to clear, so
 			// loop a bit quicker.
             // Poll slower while we're gathering samples.
-			delay((mpuSampler.samplesLeft() > 0) ? 10 : 1);
+			delay((mpuSampler.samplesLeft() > 0) ? SAMPLE_DELAY_MS : 1);
             break;
             
         case STATE_PROCESSING:
