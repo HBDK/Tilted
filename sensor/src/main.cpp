@@ -26,7 +26,6 @@
 #include "tilted_sensor_id.h"
 #include "tilted_packet_builder.h"
 #include "tilted_value_helper.h"
-#include "tilted_filters.h"
 
 // Set ADC mode for voltage reading.
 ADC_MODE(ADC_VCC);

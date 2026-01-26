@@ -4,7 +4,6 @@
 #include <Wire.h>
 
 #include "MPU6050.h"
-#include "tilted_filters.h"
 
 // Simple MPU6050 sampler that collects N tilt samples and one temperature sample.
 //
