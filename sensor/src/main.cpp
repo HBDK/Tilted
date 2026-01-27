@@ -44,8 +44,8 @@ ADC_MODE(ADC_VCC);
 #define ONE_WIRE_PIN 14 // GPIO14 / D5
 
 // number of tilt samples to average
-#define MAX_SAMPLES 5
-#define SAMPLE_DELAY_MS 10
+#define MAX_SAMPLES 7
+#define SAMPLE_DELAY_MS 20
 
 // Normal interval should be long enough to stretch out battery life. Since
 // we're using the MPU temp sensor, we're probably going to see slower

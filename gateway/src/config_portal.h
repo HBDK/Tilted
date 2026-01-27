@@ -53,6 +53,6 @@ private:
     WebServer server_{80};
     DNSServer dnsServer_;
 
-    const char* apSSID_ = "TiltedGateway-Setup";
-    const char* apPassword_ = "tilted123";
+    const char* apSSID_ = "";
+    const char* apPassword_ = "";
 };

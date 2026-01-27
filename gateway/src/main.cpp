@@ -14,15 +14,15 @@
 Preferences preferences;
 
 // Config variables
-String deviceName = "TiltedGateway";
+String deviceName = "";
 String wifiSSID = "";
 String wifiPassword = "";
 String polynomial = "";// somthing like "0.5013885598189161 + 0.019948730468857152 *tilt" use https://www.ispindel.de/tools/calibration/calibration.htm for calibration
 String brewfatherURL = "";
 
 // AP mode settings
-const char* apSSID = "TiltedGateway-Setup";
-const char* apPassword = "tilted123";
+const char* apSSID = "Porter-Setup";
+const char* apPassword = "beermeplease";
 
 // Config mode flag
 bool configMode = false;
@@ -121,7 +121,7 @@ bool integrationEnabled(String integration) {
 void loadSettings() {
     preferences.begin("tilted", false);
     
-    deviceName = preferences.getString("deviceName", "TiltedGateway");
+    deviceName = preferences.getString("deviceName", "porter");
     wifiSSID = preferences.getString("wifiSSID", "");
     wifiPassword = preferences.getString("wifiPassword", "");
     polynomial = preferences.getString("polynomial", "");

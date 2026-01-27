@@ -23,14 +23,17 @@ Due to the above approach, a conservative estimate of the battery life, assuming
 * **Small footprint.**
 * **Flexible positioning** due to the sensor device not connecting directly to WiFi.
   * Great for aluminum fermentation vessels.
-* **Several integrations:**
-  * Brewfather
-  * MQTT
-  * InfluxDB
 * **Integrations and settings can be updated even when the sensor is in use.**
   * This is possible because integrations are handled by the gateway device.
 
 ## Usage
+### setup
+The gateway (porter) needs to be configured before use, first time you turn it on it should create a hotspot called "Porter-Setup" you can connect with the password: "beermeplease" when connected it should open a captive portal where you can fill in your wifi, wifi password, polynomial and brewfather url.
+
+once configured the porter will go into listing mode and only connect to your wifi when it has a payload to deliver.
+
+you can put it back into config mode by connecting pin 13 to gnd during boot (press "en" or simple pull the usb cable and reinsert it).
+
 ### Calibration mode
 Calibration mode can be entered by doing the following:
 
@@ -39,16 +42,10 @@ Calibration mode can be entered by doing the following:
 
 This will enable an update interval of 30 seconds for 30 minutes, allowing the user to calibrate the device.
 
-Furthermore, the device will also check for OTA updates. It will do this by trying to connect to the WiFi AP and OTA server defined in the `credentials.h` file.
+follow the procedure for ispindel calibration and paste the polynomial during setup
+the polynomial should look something like this; "0.5013885598189161 + 0.019948730468857152 *tilt"
 
-### 25-degree calibration
-Before using the sensor device, you need to calibrate it such that the tilt value is about 25 degrees in plain water. The 3D printed insert includes a handy way to accomplish this:
-
-1. Cut a piece of filament and insert it into the hole at the bottom of the 3D printed insert.
-2. Put the sensor into calibration mode.
-3. Insert the sensor into the PET preform and put it in plain water. Read the tilt value.
-4. If the tilt value is too high, cut off a bit of filament. Measure again.
-5. Repeat until the tilt value is 25 ± 3.
+you can calculate the polynomial here: https://www.ispindel.de/tools/calibration/calibration.htm
 
 ## Hardware
 
